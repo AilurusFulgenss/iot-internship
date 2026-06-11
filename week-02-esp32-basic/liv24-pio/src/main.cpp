@@ -7,6 +7,8 @@
 #include "lvgl.h"
 #include "btn_mode.h"
 #include "ui_user.h"
+#include "ui_dev.h"
+#include "calib.h"
 
 static const char *TAG = "LIV24";
 
@@ -15,8 +17,7 @@ static const char *TAG = "LIV24";
 #define RELAY2_GPIO GPIO_NUM_46
 #define NUM_PAGES   3
 
-// Mode root screens (placeholder until full UI is built)
-static lv_obj_t *scr_dev  = NULL;
+// scr_dev is defined in ui_dev.cpp — exec placeholder is local
 static lv_obj_t *scr_exec = NULL;
 
 // ── RS485 / MODBUS ─────────────────────────────────────
@@ -50,7 +51,7 @@ static lv_obj_t *make_hline(lv_obj_t *parent, int y, int w = 560)
 {
     lv_obj_t *line = lv_obj_create(parent);
     lv_obj_set_size(line, w, 2);
-    lv_obj_set_style_bg_color(line, lv_color_hex(0x00bb00), 0);
+    lv_obj_set_style_bg_color(line, lv_color_hex(0x00E5FF), 0);
     lv_obj_set_style_border_width(line, 0, 0);
     lv_obj_set_style_pad_all(line, 0, 0);
     lv_obj_align(line, LV_ALIGN_TOP_MID, 0, y);
@@ -121,7 +122,7 @@ static void create_sensors(void)
     add_sensor_row(scr[1], "PM10",        "ug/m3",         &lbl_pm10_val,  480);
 
     make_hline(scr[1], 580);
-    make_label(scr[1], "[ BOOT ]  next page  >", 0x335533, &lv_font_montserrat_14,
+    make_label(scr[1], "[ BOOT ]  next page  >", 0x00E5FF, &lv_font_montserrat_14,
                LV_ALIGN_BOTTOM_MID, 0, -30);
 }
 
@@ -134,9 +135,9 @@ static void relay_cb(lv_event_t *e)
 
     lv_label_set_text(relay_btn_lbl[idx], relay_on[idx] ? "ON" : "OFF");
     lv_obj_set_style_bg_color(relay_btn[idx],
-        relay_on[idx] ? lv_color_hex(0x007700) : lv_color_hex(0x222222), 0);
+        relay_on[idx] ? lv_color_hex(0x00E5FF) : lv_color_hex(0x222222), 0);
     lv_obj_set_style_text_color(relay_btn_lbl[idx],
-        relay_on[idx] ? lv_color_hex(0x00ff44) : lv_color_hex(0x555555), 0);
+        relay_on[idx] ? lv_color_hex(0xFFFFFF) : lv_color_hex(0x555555), 0);
 
     gpio_set_level(RELAY_GPIO[idx], relay_on[idx] ? 1 : 0);
     ESP_LOGI(TAG, "Relay %d -> %s  (GPIO%d=%d)",
@@ -150,7 +151,7 @@ static void create_relay_ctrl(void)
     lv_obj_set_style_bg_color(scr[2], lv_color_hex(0x080808), 0);
     lv_obj_set_style_bg_opa(scr[2], LV_OPA_COVER, 0);
 
-    make_label(scr[2], "RELAY CONTROL", 0x00ff44, &lv_font_montserrat_24,
+    make_label(scr[2], "RELAY CONTROL", 0x00E5FF, &lv_font_montserrat_24,
                LV_ALIGN_TOP_MID, 0, 30);
     make_hline(scr[2], 80);
 
@@ -178,7 +179,7 @@ static void create_relay_ctrl(void)
         lv_obj_center(relay_btn_lbl[i]);
     }
 
-    make_label(scr[2], "[ BOOT ]  back to home", 0x335533, &lv_font_montserrat_14,
+    make_label(scr[2], "[ BOOT ]  back to home", 0xFFFFFF, &lv_font_montserrat_14,
                LV_ALIGN_BOTTOM_MID, 0, -30);
 }
 
@@ -263,20 +264,18 @@ static void sensor_read_task(void *arg)
             ESP_LOGI(TAG, "T=%.1f°C H=%.1f%% Sound=%ddB PM2.5=%.1f PM10=%.1f",
                      temp, hum, snd, pm25, pm10);
 
+            // Apply calibration
+            float t_cal   = calib_apply(temp,        &g_calib.temp);
+            float h_cal   = calib_apply(hum,         &g_calib.hum);
+            float p25_cal = calib_apply(pm25,        &g_calib.pm25);
+            float p10_cal = calib_apply(pm10,        &g_calib.pm10);
+            float s_cal   = calib_apply((float)snd,  &g_calib.sound);
+
             bsp_display_lock(0);
-            // Update old sensor page (scr[1])
-            snprintf(buf, sizeof(buf), "%.1f", temp);
-            lv_label_set_text(lbl_temp_val, buf);
-            snprintf(buf, sizeof(buf), "%.1f", hum);
-            lv_label_set_text(lbl_hum_val, buf);
-            snprintf(buf, sizeof(buf), "%d", snd);
-            lv_label_set_text(lbl_sound_val, buf);
-            snprintf(buf, sizeof(buf), "%.1f", pm25);
-            lv_label_set_text(lbl_pm25_val, buf);
-            snprintf(buf, sizeof(buf), "%.1f", pm10);
-            lv_label_set_text(lbl_pm10_val, buf);
-            // Update USER mode screen
-            ui_user_update(temp, hum, pm25, pm10, (int)snd);
+            // USER screen: calibrated values
+            ui_user_update(t_cal, h_cal, p25_cal, p10_cal, (int)s_cal);
+            // DEV screen: raw values (it calculates cal internally)
+            ui_dev_update(temp, hum, (float)snd, pm25, pm10);
             bsp_display_unlock();
         } else {
             ESP_LOGW(TAG, "sensor: no response");
@@ -350,6 +349,7 @@ extern "C" void app_main(void)
 {
     ESP_LOGI(TAG, "LIV-24 starting...");
 
+    calib_init();   // NVS flash init + load saved calibration offsets
     rs485_init();
     xTaskCreate(sensor_read_task, "sensor", 4096, NULL, 5, NULL);
 
@@ -368,13 +368,13 @@ extern "C" void app_main(void)
     bsp_display_backlight_on();
 
     bsp_display_lock(0);
-    create_splash();       // scr[0] — accessible from relay page via short press back
-    create_sensors();      // scr[1] — legacy sensor list (kept for reference)
-    create_relay_ctrl();   // scr[2] — relay toggle page (short press from user screen)
-    ui_user_create();      // scr_user — main USER mode screen
-    create_placeholder(&scr_dev,  "DEV MODE",  0x00aaff, "Calibration coming soon");
+    create_splash();       // scr[0]
+    create_sensors();      // scr[1] — legacy sensor list
+    create_relay_ctrl();   // scr[2] — relay page (short press from user screen)
+    ui_user_create();      // scr_user — USER mode
+    ui_dev_create();       // scr_dev  — DEV mode (calibration)
     create_placeholder(&scr_exec, "EXEC MODE", 0xffaa00, "Dashboard coming soon");
-    lv_scr_load(scr_user); // default screen is now the new user UI
+    lv_scr_load(scr_user); // default screen is the new user UI
     bsp_display_unlock();
 
     btn_mode_init(BOOT_BTN);
