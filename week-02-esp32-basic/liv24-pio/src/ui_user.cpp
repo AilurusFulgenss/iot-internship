@@ -26,8 +26,10 @@ static lv_obj_t *lbl_pm10    = NULL;
 static lv_obj_t *lbl_sound   = NULL;
 static lv_obj_t *card_pm25   = NULL;
 static lv_obj_t *card_pm10   = NULL;
-static lv_obj_t *lbl_pm25_st = NULL;  // "GOOD" / "MODERATE" / ...
-static lv_obj_t *lbl_pm10_st = NULL;
+static lv_obj_t *lbl_pm25_st    = NULL;
+static lv_obj_t *lbl_pm10_st    = NULL;
+static lv_obj_t *lbl_pm25_title = NULL;
+static lv_obj_t *lbl_pm10_title = NULL;
 
 // ── AQI helpers ──────────────────────────────────────────────────────────────
 
@@ -94,14 +96,20 @@ static void apply_pm_colors(void)
 
         if (lbl_pm25_st) lv_label_set_text(lbl_pm25_st, aqi_label_pm25(g_pm25_last));
         if (lbl_pm10_st) lv_label_set_text(lbl_pm10_st, aqi_label_pm10(g_pm10_last));
+        if (lbl_pm25_st)    lv_obj_set_style_text_color(lbl_pm25_st,    lv_color_hex(text_on_bg(c25)), 0);
+        if (lbl_pm10_st)    lv_obj_set_style_text_color(lbl_pm10_st,    lv_color_hex(text_on_bg(c10)), 0);
+        if (lbl_pm25_title) lv_obj_set_style_text_color(lbl_pm25_title, lv_color_hex(text_on_bg(c25)), 0);
+        if (lbl_pm10_title) lv_obj_set_style_text_color(lbl_pm10_title, lv_color_hex(text_on_bg(c10)), 0);
     } else {
         lv_obj_set_style_bg_color(card_pm25, lv_color_hex(CLR_CARD), 0);
         lv_obj_set_style_bg_color(card_pm10, lv_color_hex(CLR_CARD), 0);
         lv_obj_set_style_text_color(lbl_pm25, lv_color_hex(0xFFFFFF), 0);
         lv_obj_set_style_text_color(lbl_pm10, lv_color_hex(0xFFFFFF), 0);
 
-        if (lbl_pm25_st) lv_label_set_text(lbl_pm25_st, "");
-        if (lbl_pm10_st) lv_label_set_text(lbl_pm10_st, "");
+        if (lbl_pm25_st)    lv_label_set_text(lbl_pm25_st, "");
+        if (lbl_pm10_st)    lv_label_set_text(lbl_pm10_st, "");
+        if (lbl_pm25_title) lv_obj_set_style_text_color(lbl_pm25_title, lv_color_hex(0x7788AA), 0);
+        if (lbl_pm10_title) lv_obj_set_style_text_color(lbl_pm10_title, lv_color_hex(0x7788AA), 0);
     }
 }
 
@@ -129,6 +137,7 @@ typedef struct {
     lv_obj_t *card;
     lv_obj_t *lbl_val;
     lv_obj_t *lbl_status;   // NULL unless has_status=true
+    lv_obj_t *lbl_title;
 } card_out_t;
 
 static void make_card(lv_obj_t *parent, int w, int h,
@@ -177,8 +186,9 @@ static void make_card(lv_obj_t *parent, int w, int h,
         out->lbl_status = lbl_s;
     }
 
-    out->card    = c;
-    out->lbl_val = lbl_v;
+    out->card      = c;
+    out->lbl_val   = lbl_v;
+    out->lbl_title = lbl_t;
 }
 
 // ── ui_user_create ───────────────────────────────────────────────────────────
@@ -203,7 +213,7 @@ void ui_user_create(void)
     // Cyan accent line at very top
     lv_obj_t *accent = lv_obj_create(hdr);
     lv_obj_set_size(accent, 720, 3);
-    lv_obj_align(accent, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_align(accent, LV_ALIGN_TOP_MID, 0, 48);
     lv_obj_set_style_bg_color(accent, lv_color_hex(0x00E5FF), 0);
     lv_obj_set_style_border_width(accent, 0, 0);
     lv_obj_set_style_pad_all(accent, 0, 0);
@@ -248,10 +258,10 @@ void ui_user_create(void)
     lv_obj_set_style_border_width(cont, 0, 0);
     lv_obj_set_style_pad_left(cont,   16, 0);
     lv_obj_set_style_pad_right(cont,  16, 0);
-    lv_obj_set_style_pad_top(cont,    16, 0);
+    lv_obj_set_style_pad_top(cont,    50, 0);
     lv_obj_set_style_pad_bottom(cont, 24, 0);
     lv_obj_set_style_pad_column(cont, 12, 0);
-    lv_obj_set_style_pad_row(cont,    12, 0);
+    lv_obj_set_style_pad_row(cont,    16, 0);
     lv_obj_set_scroll_dir(cont, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(cont, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_layout(cont, LV_LAYOUT_FLEX);
@@ -270,15 +280,17 @@ void ui_user_create(void)
 
     // ── Card 3: PM2.5 (IQAir color) ──────────────────────
     make_card(cont, CW, 190, "PM 2.5", "ug/m3", true, &c);
-    card_pm25   = c.card;
-    lbl_pm25    = c.lbl_val;
-    lbl_pm25_st = c.lbl_status;
+    card_pm25       = c.card;
+    lbl_pm25        = c.lbl_val;
+    lbl_pm25_st     = c.lbl_status;
+    lbl_pm25_title  = c.lbl_title;
 
     // ── Card 4: PM10 (IQAir color) ────────────────────────
     make_card(cont, CW, 190, "PM 10", "ug/m3", true, &c);
-    card_pm10   = c.card;
-    lbl_pm10    = c.lbl_val;
-    lbl_pm10_st = c.lbl_status;
+    card_pm10       = c.card;
+    lbl_pm10        = c.lbl_val;
+    lbl_pm10_st     = c.lbl_status;
+    lbl_pm10_title  = c.lbl_title;
 
     // ── Card 5: Sound Level (full width) ──────────────────
     //    Full inner width = 720 - 32 = 688; spans both columns
