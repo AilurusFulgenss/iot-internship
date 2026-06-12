@@ -8,6 +8,7 @@
 #include "btn_mode.h"
 #include "ui_user.h"
 #include "ui_dev.h"
+#include "ui_exec.h"
 #include "calib.h"
 
 static const char *TAG = "LIV24";
@@ -17,8 +18,6 @@ static const char *TAG = "LIV24";
 #define RELAY2_GPIO GPIO_NUM_46
 #define NUM_PAGES   3
 
-// scr_dev is defined in ui_dev.cpp — exec placeholder is local
-static lv_obj_t *scr_exec = NULL;
 
 // ── RS485 / MODBUS ─────────────────────────────────────
 #define RS485_TXD      GPIO_NUM_47
@@ -276,6 +275,7 @@ static void sensor_read_task(void *arg)
             ui_user_update(t_cal, h_cal, p25_cal, p10_cal, (int)s_cal);
             // DEV screen: raw values (it calculates cal internally)
             ui_dev_update(temp, hum, (float)snd, pm25, pm10);
+            ui_exec_update(p25_cal, p10_cal, (int)s_cal);
             bsp_display_unlock();
         } else {
             ESP_LOGW(TAG, "sensor: no response");
@@ -311,12 +311,14 @@ static void create_placeholder(lv_obj_t **out, const char *title,
 
 // ─── btn_mode callbacks ────────────────────────────────
 
-// Short press in USER mode: toggle between user screen and relay page
+// Short press: USER↔relay  |  EXEC has no sub-pages
 void on_short_press(void)
 {
     bsp_display_lock(0);
     lv_obj_t *active = lv_scr_act();
-    if (active == scr_user) {
+    if (active == scr_exec) {
+        // single EXEC screen — short press does nothing in EXEC mode
+    } else if (active == scr_user) {
         lv_scr_load_anim(scr[2], LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
         ESP_LOGI(TAG, "-> Relay page");
     } else {
@@ -337,7 +339,7 @@ void on_mode_changed(app_mode_t new_mode)
             lv_scr_load_anim(scr_dev,  LV_SCR_LOAD_ANIM_MOVE_LEFT, 400, 0, false);
             break;
         case MODE_EXEC:
-            lv_scr_load_anim(scr_exec, LV_SCR_LOAD_ANIM_MOVE_LEFT, 400, 0, false);
+            lv_scr_load_anim(scr_exec, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
             break;
     }
     bsp_display_unlock();
@@ -367,14 +369,22 @@ extern "C" void app_main(void)
     bsp_display_start();
     bsp_display_backlight_on();
 
+    // One lock block for ALL screen creation — taskLVGL stays blocked the entire time
+    // so it cannot render to PSRAM (no dirty L2 cache lines when we finally unlock).
+    // Splitting into blocks with vTaskDelay(20ms) between them lets taskLVGL render
+    // between blocks, accumulating dirty PSRAM L2 lines that cause portEXIT_CRITICAL
+    // to deadlock in the ROM L2-writeback spinloop on ESP32-P4 Rev 1.3.
+    // One lock block: create ALL screens + load first screen before any unlock.
+    // taskLVGL cannot render during this window → zero dirty L2 PSRAM lines
+    // at the single bsp_display_unlock() call → no L2 writeback deadlock.
     bsp_display_lock(0);
-    create_splash();       // scr[0]
-    create_sensors();      // scr[1] — legacy sensor list
-    create_relay_ctrl();   // scr[2] — relay page (short press from user screen)
-    ui_user_create();      // scr_user — USER mode
-    ui_dev_create();       // scr_dev  — DEV mode (calibration)
-    create_placeholder(&scr_exec, "EXEC MODE", 0xffaa00, "Dashboard coming soon");
-    lv_scr_load(scr_user); // default screen is the new user UI
+    create_splash();
+    create_sensors();
+    create_relay_ctrl();
+    ui_user_create();
+    ui_dev_create();
+    ui_exec_create();
+    lv_scr_load(scr_user);  // must be inside the same lock — not a separate block
     bsp_display_unlock();
 
     btn_mode_init(BOOT_BTN);
