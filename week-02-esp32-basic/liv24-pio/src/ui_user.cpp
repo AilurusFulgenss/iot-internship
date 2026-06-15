@@ -1,4 +1,5 @@
 #include "ui_user.h"
+#include "eth_upload.h"
 #include <stdio.h>
 
 // ── IQAir AQI color palette ─────────────────────────────────────────────────
@@ -218,17 +219,30 @@ void ui_user_create(void)
     lv_obj_set_style_border_width(accent, 0, 0);
     lv_obj_set_style_pad_all(accent, 0, 0);
 
+    // Logo (left side, if available) — user-uploaded PNG from SPIFFS
+    int title_x = 0;
+    if (eth_upload_has_logo()) {
+        lv_obj_t *logo_img = lv_image_create(hdr);
+        lv_image_set_src(logo_img, ETH_LOGO_LVGL_PATH);
+        lv_obj_set_size(logo_img, 48, 48);
+        lv_image_set_inner_align(logo_img, LV_IMAGE_ALIGN_STRETCH);
+        lv_obj_align(logo_img, LV_ALIGN_LEFT_MID, 0, 0);
+        lv_obj_set_style_bg_color(logo_img, lv_color_white(), 0);
+        lv_obj_set_style_bg_opa(logo_img, LV_OPA_COVER, 0);
+        title_x = 58;
+    }
+
     lv_obj_t *lbl_name = lv_label_create(hdr);
     lv_label_set_text(lbl_name, "LIV-24");
     lv_obj_set_style_text_color(lbl_name, lv_color_hex(0x00E5FF), 0);
     lv_obj_set_style_text_font(lbl_name, &lv_font_montserrat_32, 0);
-    lv_obj_align(lbl_name, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_align(lbl_name, LV_ALIGN_LEFT_MID, title_x, 0);
 
     lv_obj_t *lbl_sub = lv_label_create(hdr);
     lv_label_set_text(lbl_sub, "IoT NODE");
     lv_obj_set_style_text_color(lbl_sub, lv_color_hex(0x3A4A5A), 0);
     lv_obj_set_style_text_font(lbl_sub, &lv_font_montserrat_14, 0);
-    lv_obj_align(lbl_sub, LV_ALIGN_LEFT_MID, 112, 12);
+    lv_obj_align(lbl_sub, LV_ALIGN_LEFT_MID, 112 + title_x, 12);
 
     // AQI Color toggle — right side of header
     lv_obj_t *lbl_sw = lv_label_create(hdr);
