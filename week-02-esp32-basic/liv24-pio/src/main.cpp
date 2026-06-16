@@ -2,6 +2,8 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_netif.h"
+#include "esp_event.h"
 #include "driver/gpio.h"
 #include "driver/uart.h"
 #include "bsp/esp32_p4_wifi6_touch_lcd_4b.h"
@@ -15,6 +17,7 @@
 #include "ui_pm.h"
 #include "calib.h"
 #include "eth_upload.h"
+#include "wifi_mqtt.h"
 
 static const char *TAG = "LIV24";
 
@@ -199,21 +202,29 @@ static void create_sensors(void)
 // Styled header bar (72px) matching USER/PM screens.
 // Relay buttons shifted +72px down from previous layout.
 
+// Called from both button tap and MQTT — safe from any task via bsp_display_lock.
+void relay_set_state(int idx, bool on)
+{
+    if (idx < 0 || idx > 1) return;
+    relay_on[idx] = on;
+    gpio_set_level(RELAY_GPIO[idx], on ? 1 : 0);
+    ESP_LOGI(TAG, "Relay %d -> %s (GPIO%d=%d)",
+             idx + 1, on ? "ON" : "OFF", RELAY_GPIO[idx], on ? 1 : 0);
+
+    if (bsp_display_lock(50)) {
+        lv_label_set_text(relay_btn_lbl[idx], on ? "ON" : "OFF");
+        lv_obj_set_style_bg_color(relay_btn[idx],
+            on ? lv_color_hex(0x00E5FF) : lv_color_hex(0x222222), 0);
+        lv_obj_set_style_text_color(relay_btn_lbl[idx],
+            on ? lv_color_hex(0xFFFFFF) : lv_color_hex(0x555555), 0);
+        bsp_display_unlock();
+    }
+}
+
 static void relay_cb(lv_event_t *e)
 {
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    relay_on[idx] = !relay_on[idx];
-
-    lv_label_set_text(relay_btn_lbl[idx], relay_on[idx] ? "ON" : "OFF");
-    lv_obj_set_style_bg_color(relay_btn[idx],
-        relay_on[idx] ? lv_color_hex(0x00E5FF) : lv_color_hex(0x222222), 0);
-    lv_obj_set_style_text_color(relay_btn_lbl[idx],
-        relay_on[idx] ? lv_color_hex(0xFFFFFF) : lv_color_hex(0x555555), 0);
-
-    gpio_set_level(RELAY_GPIO[idx], relay_on[idx] ? 1 : 0);
-    ESP_LOGI(TAG, "Relay %d -> %s  (GPIO%d=%d)",
-             idx + 1, relay_on[idx] ? "ON" : "OFF",
-             RELAY_GPIO[idx], relay_on[idx] ? 1 : 0);
+    relay_set_state(idx, !relay_on[idx]);
 }
 
 static void create_relay_ctrl(void)
@@ -387,10 +398,99 @@ static void sensor_read_task(void *arg)
             ui_dev_update(temp, hum, (float)snd, pm25, pm10);
             ui_exec_update(p25_cal, p10_cal, (int)s_cal);
             bsp_display_unlock();
+
+            wifi_mqtt_publish_sensors(t_cal, h_cal, (int)s_cal, p25_cal, p10_cal);
         } else {
             ESP_LOGW(TAG, "sensor: no response");
         }
         vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+}
+
+// ─── Touch navigation: replaces BOOT button (GPIO35 = EMAC TXD1 conflict) ────
+
+static void touch_nav_init(void)
+{
+    // ── ▶ next-page button at bottom-right of USER-mode screens ──────────────
+    // PM screen: strip card is 175px tall anchored 48px above bottom → top at H−223.
+    // Use y_ofs=−231 so button clears the strip with 8px gap; USER/RELAY use −8.
+    lv_obj_t *cycle_scrns[] = {scr_user, scr_pm, scr[2]};
+    int       cycle_y[]     = {-8,       -231,   -8};
+    for (int i = 0; i < 3; i++) {
+        lv_obj_t *btn = lv_btn_create(cycle_scrns[i]);
+        lv_obj_set_size(btn, 88, 56);
+        lv_obj_align(btn, LV_ALIGN_BOTTOM_RIGHT, -8, cycle_y[i]);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x00E5FF), 0);
+        lv_obj_set_style_bg_opa(btn, LV_OPA_10, 0);
+        lv_obj_set_style_border_color(btn, lv_color_hex(0x00E5FF), 0);
+        lv_obj_set_style_border_width(btn, 1, 0);
+        lv_obj_set_style_border_opa(btn, LV_OPA_30, 0);
+        lv_obj_set_style_radius(btn, 6, 0);
+        lv_obj_set_style_shadow_width(btn, 0, 0);
+        lv_obj_add_event_cb(btn, [](lv_event_t *) { on_short_press(); },
+                            LV_EVENT_CLICKED, NULL);
+        lv_obj_t *lbl = lv_label_create(btn);
+        lv_label_set_text(lbl, LV_SYMBOL_RIGHT);
+        lv_obj_set_style_text_color(lbl, lv_color_hex(0x00E5FF), 0);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_24, 0);
+        lv_obj_center(lbl);
+    }
+
+    // ── DEV / EXEC mode buttons — dark/hidden, bottom-left of USER screen ────
+    {
+        lv_obj_t *btn = lv_btn_create(scr_user);
+        lv_obj_set_size(btn, 76, 40);
+        lv_obj_align(btn, LV_ALIGN_BOTTOM_LEFT, 8, -8);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x0D0D1A), 0);
+        lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(btn, 0, 0);
+        lv_obj_set_style_radius(btn, 4, 0);
+        lv_obj_set_style_shadow_width(btn, 0, 0);
+        lv_obj_add_event_cb(btn, [](lv_event_t *) { set_app_mode(MODE_DEV); },
+                            LV_EVENT_CLICKED, NULL);
+        lv_obj_t *lbl = lv_label_create(btn);
+        lv_label_set_text(lbl, "DEV");
+        lv_obj_set_style_text_color(lbl, lv_color_hex(0x1C2535), 0);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+        lv_obj_center(lbl);
+    }
+    {
+        lv_obj_t *btn = lv_btn_create(scr_user);
+        lv_obj_set_size(btn, 76, 40);
+        lv_obj_align(btn, LV_ALIGN_BOTTOM_LEFT, 92, -8);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x0D0D1A), 0);
+        lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(btn, 0, 0);
+        lv_obj_set_style_radius(btn, 4, 0);
+        lv_obj_set_style_shadow_width(btn, 0, 0);
+        lv_obj_add_event_cb(btn, [](lv_event_t *) { set_app_mode(MODE_EXEC); },
+                            LV_EVENT_CLICKED, NULL);
+        lv_obj_t *lbl = lv_label_create(btn);
+        lv_label_set_text(lbl, "EXEC");
+        lv_obj_set_style_text_color(lbl, lv_color_hex(0x1C2535), 0);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+        lv_obj_center(lbl);
+    }
+
+    // ── ← USER exit button on DEV and EXEC screens ───────────────────────────
+    lv_obj_t *mode_scrns[] = {scr_dev, scr_exec};
+    for (int i = 0; i < 2; i++) {
+        lv_obj_t *btn = lv_btn_create(mode_scrns[i]);
+        lv_obj_set_size(btn, 88, 40);
+        lv_obj_align(btn, LV_ALIGN_TOP_RIGHT, -8, 72);  // 72 = 8px below DEV(64px) / EXEC(63px) headers
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x1A1A2E), 0);
+        lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_color(btn, lv_color_hex(0x2C3D52), 0);
+        lv_obj_set_style_border_width(btn, 1, 0);
+        lv_obj_set_style_radius(btn, 6, 0);
+        lv_obj_set_style_shadow_width(btn, 0, 0);
+        lv_obj_add_event_cb(btn, [](lv_event_t *) { set_app_mode(MODE_USER); },
+                            LV_EVENT_CLICKED, NULL);
+        lv_obj_t *lbl = lv_label_create(btn);
+        lv_label_set_text(lbl, LV_SYMBOL_LEFT " USER");
+        lv_obj_set_style_text_color(lbl, lv_color_hex(0x445566), 0);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+        lv_obj_center(lbl);
     }
 }
 
@@ -438,6 +538,11 @@ void on_mode_changed(app_mode_t new_mode)
 extern "C" void app_main(void)
 {
     ESP_LOGI(TAG, "LIV-24 starting...");
+
+    // Init network stack once, at the very top — both eth_start_background()
+    // and eth_upload_start() rely on these being called exactly once before use.
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     calib_init();
     rs485_init();
@@ -576,6 +681,7 @@ extern "C" void app_main(void)
     ui_pm_create();
     ui_dev_create();
     ui_exec_create();
+    touch_nav_init();
     lv_scr_load(scr[0]);     // show logo splash — inside the same lock block
     bsp_display_unlock();
 
@@ -586,5 +692,15 @@ extern "C" void app_main(void)
     lv_scr_load_anim(scr_user, LV_SCR_LOAD_ANIM_FADE_IN, 600, 0, false);
     bsp_display_unlock();
 
-    btn_mode_init(BOOT_BTN);
+    // Register MQTT handler BEFORE starting Ethernet — esp_eth_start() blocks
+    // during PHY autonegotiation; DHCP can complete during that block so the
+    // IP_EVENT_ETH_GOT_IP handler must already be registered when it fires.
+    wifi_mqtt_set_relay_cb(relay_set_state);
+    wifi_mqtt_init(MQTT_BROKER_URI);
+    eth_start_background();
+
+    // btn_mode_init(BOOT_BTN);
+    // GPIO35 = EMAC RMII TXD1. gpio_config(INPUT) from btn_mode_init clears the
+    // GPIO matrix output-enable on GPIO35, disabling TXD1 and corrupting all
+    // Ethernet TX frames. Button disabled until a non-EMAC GPIO is identified.
 }
