@@ -214,10 +214,8 @@ void ui_dev_create(void)
     lv_obj_set_style_border_width(bar, 0, 0);
     lv_obj_set_style_pad_all(bar, 0, 0);
 
-    make_lbl(hdr, "DEV MODE", 0x0088FF, &lv_font_montserrat_32,
+    make_lbl(hdr, "DEV MODE", 0x5577AA, &lv_font_montserrat_32,
              LV_ALIGN_LEFT_MID, 0, 0);
-    make_lbl(hdr, "Hold 3s to exit", 0x2A2A44, &lv_font_montserrat_14,
-             LV_ALIGN_RIGHT_MID, 0, 0);
 
     // ── Scrollable card container ─────────────────────────
     lv_obj_t *cont = lv_obj_create(scr_dev);

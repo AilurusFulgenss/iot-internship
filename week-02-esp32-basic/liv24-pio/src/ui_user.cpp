@@ -225,10 +225,7 @@ void ui_user_create(void)
         lv_obj_t *logo_img = lv_image_create(hdr);
         lv_image_set_src(logo_img, ETH_LOGO_LVGL_PATH);
         lv_obj_set_size(logo_img, 48, 48);
-        lv_image_set_inner_align(logo_img, LV_IMAGE_ALIGN_STRETCH);
         lv_obj_align(logo_img, LV_ALIGN_LEFT_MID, 0, 0);
-        lv_obj_set_style_bg_color(logo_img, lv_color_white(), 0);
-        lv_obj_set_style_bg_opa(logo_img, LV_OPA_COVER, 0);
         title_x = 58;
     }
 

@@ -80,8 +80,6 @@ void ui_exec_create(void)
     // header (2 labels + 1 gold bar = 3 obj)
     make_lbl(scr_exec, "KPI OVERVIEW",
              0xFFAA00, &lv_font_montserrat_32, LV_ALIGN_TOP_LEFT,  20, 14);
-    make_lbl(scr_exec, "Hold 3s to exit",
-             0x334455, &lv_font_montserrat_14, LV_ALIGN_TOP_RIGHT, -20, 22);
 
     lv_obj_t *sep = lv_obj_create(scr_exec);
     lv_obj_set_size(sep, 720, 3);
@@ -94,7 +92,7 @@ void ui_exec_create(void)
     // card 328×240, h-gap=16, v-gap=20, margins: top=76 bottom=24
     make_kpi(scr_exec,  24, 113, "SYSTEM UPTIME",       "target: 7-day continuous",     0x0099FF,   0, &s_bar_up,    &s_lbl_up);
     make_kpi(scr_exec, 368, 113, "AIR QUALITY (PM2.5)", "headroom to Sensitive groups", 0x00CC66, 100, &s_bar_aq,    &s_lbl_aq);
-    make_kpi(scr_exec,  24, 373, "PM10 HEALTH",         "headroom to 100 \xce\xbcg/m\xc2\xb3", 0xFF9933, 100, &s_bar_pm10,  &s_lbl_p10);
+    make_kpi(scr_exec,  24, 373, "PM10 HEALTH",         "headroom to 100 ug/m3",              0xFF9933, 100, &s_bar_pm10,  &s_lbl_p10);
     make_kpi(scr_exec, 368, 373, "NOISE SCORE",         "ambient noise level",          0xAA44FF, 100, &s_bar_noise, &s_lbl_ns);
 
     ESP_LOGI(TAG, "EXEC (24 obj) created OK");

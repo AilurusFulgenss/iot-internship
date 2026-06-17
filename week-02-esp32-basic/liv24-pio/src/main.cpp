@@ -91,14 +91,9 @@ static void create_splash(void)
     if (eth_upload_has_logo()) {
         lv_obj_t *logo = lv_image_create(scr[0]);
         lv_image_set_src(logo, ETH_LOGO_LVGL_PATH);
-        lv_obj_set_size(logo, 240, 240);
         lv_image_set_inner_align(logo, LV_IMAGE_ALIGN_STRETCH);
+        lv_obj_set_size(logo, 128, 128);
         lv_obj_align(logo, LV_ALIGN_CENTER, 0, -60);
-        // Transparent PNGs would be invisible on the dark splash background.
-        // Setting bg_color+bg_opa makes the widget fill with white first, so
-        // transparent pixels in the PNG composite against white instead of black.
-        lv_obj_set_style_bg_color(logo, lv_color_white(), 0);
-        lv_obj_set_style_bg_opa(logo, LV_OPA_COVER, 0);
 
         make_label(scr[0], "LIV-24",   0x00E5FF, &lv_font_montserrat_32,
                    LV_ALIGN_CENTER, 0,  80);
@@ -258,7 +253,6 @@ static void create_relay_ctrl(void)
         lv_obj_t *logo_img = lv_image_create(hdr);
         lv_image_set_src(logo_img, ETH_LOGO_LVGL_PATH);
         lv_obj_set_size(logo_img, 48, 48);
-        lv_image_set_inner_align(logo_img, LV_IMAGE_ALIGN_STRETCH);
         lv_obj_align(logo_img, LV_ALIGN_LEFT_MID, 0, 0);
         title_x = 58;
     }
@@ -279,7 +273,7 @@ static void create_relay_ctrl(void)
     // Button 1: y=252 (was 180), Button 2: y=492 (was 420)
     // Button 2 bottom: 492+140=632, margin to screen bottom: 88px ✓
     const char *names[] = {"RELAY  1", "RELAY  2"};
-    const int   ys[]    = {252, 492};
+    const int   ys[]    = {212, 452};  // shifted up 40px from original
 
     for (int i = 0; i < 2; i++) {
         make_label(scr[2], names[i], 0x888888, &lv_font_montserrat_14,
@@ -412,10 +406,9 @@ static void sensor_read_task(void *arg)
 static void touch_nav_init(void)
 {
     // ── ▶ next-page button at bottom-right of USER-mode screens ──────────────
-    // PM screen: strip card is 175px tall anchored 48px above bottom → top at H−223.
-    // Use y_ofs=−231 so button clears the strip with 8px gap; USER/RELAY use −8.
+    // Strip on PM screen moved up to -72 (from -48), so ▶ at -8 clears it with 8px gap.
     lv_obj_t *cycle_scrns[] = {scr_user, scr_pm, scr[2]};
-    int       cycle_y[]     = {-8,       -231,   -8};
+    int       cycle_y[]     = {-8,       -8,     -8};
     for (int i = 0; i < 3; i++) {
         lv_obj_t *btn = lv_btn_create(cycle_scrns[i]);
         lv_obj_set_size(btn, 88, 56);
@@ -477,7 +470,7 @@ static void touch_nav_init(void)
     for (int i = 0; i < 2; i++) {
         lv_obj_t *btn = lv_btn_create(mode_scrns[i]);
         lv_obj_set_size(btn, 88, 40);
-        lv_obj_align(btn, LV_ALIGN_TOP_RIGHT, -8, 72);  // 72 = 8px below DEV(64px) / EXEC(63px) headers
+        lv_obj_align(btn, LV_ALIGN_TOP_RIGHT, -8, 12);
         lv_obj_set_style_bg_color(btn, lv_color_hex(0x1A1A2E), 0);
         lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
         lv_obj_set_style_border_color(btn, lv_color_hex(0x2C3D52), 0);
@@ -535,6 +528,23 @@ void on_mode_changed(app_mode_t new_mode)
 
 // ─── app_main ──────────────────────────────────────────
 
+static void logo_url_received(const char *url)
+{
+    ESP_LOGI(TAG, "Logo URL: %s", url);
+    char *url_copy = strdup(url);
+    xTaskCreate([](void *arg) {
+        const char *u = (const char *)arg;
+        if (eth_logo_fetch_from_url(u)) {
+            vTaskDelay(pdMS_TO_TICKS(300));
+            esp_restart();
+        } else {
+            ESP_LOGE(TAG, "Logo fetch failed");
+        }
+        free((void *)u);
+        vTaskDelete(NULL);
+    }, "logo_fetch", 8192, url_copy, 3, NULL);
+}
+
 extern "C" void app_main(void)
 {
     ESP_LOGI(TAG, "LIV-24 starting...");
@@ -587,84 +597,21 @@ extern "C" void app_main(void)
     // Initialize LVGL POSIX filesystem driver (maps drive 'A' → /spiffs)
     // Must be called after bsp_display_start() initializes LVGL.
     lv_fs_posix_init();
-    lv_lodepng_init();
     lv_tjpgd_init();
 
-    // Route PNG pixel-data allocations to PSRAM.
-    // Without this, lv_draw_buf_create_ex pulls from the 128KB LVGL internal heap
-    // which can't hold a 65KB file buffer + 160KB pixel buffer simultaneously.
-    // With PSRAM: file buffer stays on LVGL heap (≤65KB), pixel buffer goes to 32MB SPIRAM.
-    {
-        lv_draw_buf_handlers_t *h = lv_draw_buf_get_image_handlers();
-        h->buf_malloc_cb = [](size_t sz, lv_color_format_t) -> void * {
-            return heap_caps_malloc(sz, MALLOC_CAP_SPIRAM);
-        };
-        h->buf_free_cb = [](void *p) { heap_caps_free(p); };
-    }
-
-    // Mount SPIFFS and check if logo.png exists
+    // Mount SPIFFS and check if logo.jpg exists
     eth_upload_init();
-
-    // ── Logo diagnostic ───────────────────────────────────────────────────────
-    if (eth_upload_has_logo()) {
-        // Test 1: LVGL POSIX FS — open + read PNG magic bytes
-        lv_fs_file_t fsf;
-        lv_fs_res_t fsres = lv_fs_open(&fsf, ETH_LOGO_LVGL_PATH, LV_FS_MODE_RD);
-        if (fsres == LV_FS_RES_OK) {
-            uint8_t fhdr[8] = {};
-            uint32_t br = 0;
-            lv_fs_read(&fsf, fhdr, 8, &br);
-            lv_fs_close(&fsf);
-            bool is_png = (br >= 4 && fhdr[0] == 0x89 && fhdr[1] == 0x50 &&
-                           fhdr[2] == 0x4E && fhdr[3] == 0x47);
-            ESP_LOGI(TAG, "DIAG FS  : OK  %02X%02X%02X%02X  PNG=%s",
-                     fhdr[0], fhdr[1], fhdr[2], fhdr[3], is_png ? "YES" : "NO");
-        } else {
-            ESP_LOGE(TAG, "DIAG FS  : FAIL res=%d", fsres);
-        }
-
-        // Test 2: image decoder header — needs display lock
-        bsp_display_lock(0);
-        lv_image_header_t img_hdr = {};
-        lv_result_t dec_res = lv_image_decoder_get_info(ETH_LOGO_LVGL_PATH, &img_hdr);
-        if (dec_res == LV_RESULT_OK) {
-            ESP_LOGI(TAG, "DIAG DEC : OK  %dx%d  cf=%d",
-                     img_hdr.w, img_hdr.h, (int)img_hdr.cf);
-        } else {
-            ESP_LOGE(TAG, "DIAG DEC : FAIL  (decoder not registered / file corrupt)");
-        }
-
-        // Test 3: full pixel decode — DIAG DEC only reads the PNG IHDR (header bytes),
-        // not pixels. If lodepng errors during full decode the widget silently shows nothing.
-        lv_image_decoder_dsc_t dec_dsc = {};
-        lv_result_t open_res = lv_image_decoder_open(&dec_dsc, ETH_LOGO_LVGL_PATH, NULL);
-        if (open_res == LV_RESULT_OK && dec_dsc.decoded && dec_dsc.decoded->data) {
-            const uint8_t *p = dec_dsc.decoded->data;   // BGRA byte order in memory
-            ESP_LOGI(TAG, "DIAG OPEN: OK  px0=A%02X R%02X G%02X B%02X",
-                     p[3], p[2], p[1], p[0]);
-            lv_image_decoder_close(&dec_dsc);
-        } else {
-            ESP_LOGE(TAG, "DIAG OPEN: FAIL  res=%d  decoded=%p",
-                     (int)open_res, (void *)dec_dsc.decoded);
-            if (open_res == LV_RESULT_OK) lv_image_decoder_close(&dec_dsc);
-        }
-
-        bsp_display_unlock();
-    }
 
     // Sensor task created HERE — after bsp_display_start() — so bsp_display_lock()
     // is never called before lvgl_port_init (would assert-fail in esp_lvgl_port).
     xTaskCreate(sensor_read_task, "sensor", 4096, NULL, 5, NULL);
 
     if (!eth_upload_has_logo()) {
-        // ── Ethernet Setup mode: no logo yet — show QR + IP and wait for upload ──
         lv_obj_t *qr_obj, *ip_label;
         bsp_display_lock(0);
         create_eth_setup_screen(&qr_obj, &ip_label);
         lv_scr_load(scr_eth_setup);
         bsp_display_unlock();
-
-        // eth_upload_start() starts Ethernet+DHCP+HTTP, blocks until esp_restart()
         eth_upload_start(qr_obj, ip_label);
         return;
     }
@@ -696,6 +643,7 @@ extern "C" void app_main(void)
     // during PHY autonegotiation; DHCP can complete during that block so the
     // IP_EVENT_ETH_GOT_IP handler must already be registered when it fires.
     wifi_mqtt_set_relay_cb(relay_set_state);
+    wifi_mqtt_set_logo_url_cb(logo_url_received);
     wifi_mqtt_init(MQTT_BROKER_URI);
     eth_start_background();
 
