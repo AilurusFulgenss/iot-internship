@@ -18,6 +18,9 @@
 #include "calib.h"
 #include "eth_upload.h"
 #include "wifi_mqtt.h"
+#include "history.h"
+#include "ui_alert.h"
+#include "cJSON.h"
 
 static const char *TAG = "LIV24";
 
@@ -90,9 +93,7 @@ static void create_splash(void)
 
     if (eth_upload_has_logo()) {
         lv_obj_t *logo = lv_image_create(scr[0]);
-        lv_image_set_src(logo, ETH_LOGO_LVGL_PATH);
-        lv_image_set_inner_align(logo, LV_IMAGE_ALIGN_STRETCH);
-        lv_obj_set_size(logo, 128, 128);
+        lv_image_set_src(logo, ETH_LOGO_HD_LVGL_PATH);
         lv_obj_align(logo, LV_ALIGN_CENTER, 0, -60);
 
         make_label(scr[0], "LIV-24",   0x00E5FF, &lv_font_montserrat_32,
@@ -124,6 +125,7 @@ static lv_obj_t *create_eth_setup_screen(lv_obj_t **out_qr, lv_obj_t **out_ip_la
     lv_obj_set_style_bg_opa(scr_eth_setup, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_all(scr_eth_setup, 0, 0);
 
+    // Top bar
     lv_obj_t *bar = lv_obj_create(scr_eth_setup);
     lv_obj_set_size(bar, 720, 6);
     lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, 0);
@@ -133,30 +135,54 @@ static lv_obj_t *create_eth_setup_screen(lv_obj_t **out_qr, lv_obj_t **out_ip_la
 
     make_label(scr_eth_setup, "SETUP MODE",
                0x00E5FF, &lv_font_montserrat_32, LV_ALIGN_TOP_MID, 0, 26);
-    make_label(scr_eth_setup, "1.  Plug in Ethernet cable",
-               0x556677, &lv_font_montserrat_24, LV_ALIGN_TOP_MID, 0, 90);
-    make_label(scr_eth_setup, "2.  Scan QR to upload logo",
-               0x445566, &lv_font_montserrat_24, LV_ALIGN_TOP_MID, 0, 135);
 
-    // QR code — hidden until DHCP assigns IP, then updated with the URL
+    // Divider between columns
+    lv_obj_t *div = lv_obj_create(scr_eth_setup);
+    lv_obj_set_size(div, 2, 520);
+    lv_obj_set_pos(div, 359, 100);
+    lv_obj_set_style_bg_color(div, lv_color_hex(0x1A2A3A), 0);
+    lv_obj_set_style_border_width(div, 0, 0);
+    lv_obj_set_style_pad_all(div, 0, 0);
+
+    // ── Left column: Logo upload ──────────────────────────────────────
+    make_label(scr_eth_setup, "LOGO UPLOAD",
+               0x445566, &lv_font_montserrat_14, LV_ALIGN_TOP_MID, -180, 95);
+
     lv_obj_t *qr = lv_qrcode_create(scr_eth_setup);
-    lv_qrcode_set_size(qr, 260);
+    lv_qrcode_set_size(qr, 200);
     lv_qrcode_set_dark_color(qr, lv_color_hex(0x00E5FF));
     lv_qrcode_set_light_color(qr, lv_color_hex(0x0A0A12));
-    lv_obj_align(qr, LV_ALIGN_CENTER, 0, 20);
+    lv_obj_align(qr, LV_ALIGN_CENTER, -170, -20);
     lv_obj_add_flag(qr, LV_OBJ_FLAG_HIDDEN);
     *out_qr = qr;
 
-    // IP URL label — shown below QR, updated alongside the QR
     lv_obj_t *ip_lbl = lv_label_create(scr_eth_setup);
     lv_label_set_text(ip_lbl, "Waiting for IP...");
     lv_obj_set_style_text_color(ip_lbl, lv_color_hex(0xFFAA00), 0);
-    lv_obj_set_style_text_font(ip_lbl, &lv_font_montserrat_24, 0);
-    lv_obj_align(ip_lbl, LV_ALIGN_BOTTOM_MID, 0, -60);
+    lv_obj_set_style_text_font(ip_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_align(ip_lbl, LV_ALIGN_CENTER, -170, 120);
     *out_ip_label = ip_lbl;
 
-    make_label(scr_eth_setup, "Upload PNG — device restarts automatically",
-               0x334455, &lv_font_montserrat_14, LV_ALIGN_BOTTOM_MID, 0, -20);
+    make_label(scr_eth_setup, "Plug in Ethernet\nthen scan to upload logo",
+               0x334455, &lv_font_montserrat_14, LV_ALIGN_BOTTOM_MID, -180, -20);
+
+    // ── Right column: LINE add friend ────────────────────────────────
+    make_label(scr_eth_setup, "ADD LINE BOT",
+               0x2E7D32, &lv_font_montserrat_14, LV_ALIGN_TOP_MID, 180, 95);
+
+    lv_obj_t *line_qr = lv_qrcode_create(scr_eth_setup);
+    lv_qrcode_set_size(line_qr, 200);
+    lv_qrcode_set_dark_color(line_qr, lv_color_hex(0x06C755));
+    lv_qrcode_set_light_color(line_qr, lv_color_hex(0x0A0A12));
+    lv_obj_align(line_qr, LV_ALIGN_CENTER, 170, -20);
+    const char *line_url = "https://line.me/R/ti/p/@552ukkqd";
+    lv_qrcode_update(line_qr, line_url, strlen(line_url));
+
+    make_label(scr_eth_setup, "@552ukkqd",
+               0x06C755, &lv_font_montserrat_14, LV_ALIGN_CENTER, 170, 120);
+
+    make_label(scr_eth_setup, "Scan to receive alerts\nvia LINE",
+               0x1A3A1A, &lv_font_montserrat_14, LV_ALIGN_BOTTOM_MID, 180, -20);
 
     return scr_eth_setup;
 }
@@ -206,7 +232,7 @@ void relay_set_state(int idx, bool on)
     ESP_LOGI(TAG, "Relay %d -> %s (GPIO%d=%d)",
              idx + 1, on ? "ON" : "OFF", RELAY_GPIO[idx], on ? 1 : 0);
 
-    if (bsp_display_lock(50)) {
+    if (bsp_display_lock(0)) {
         lv_label_set_text(relay_btn_lbl[idx], on ? "ON" : "OFF");
         lv_obj_set_style_bg_color(relay_btn[idx],
             on ? lv_color_hex(0x00E5FF) : lv_color_hex(0x222222), 0);
@@ -214,6 +240,7 @@ void relay_set_state(int idx, bool on)
             on ? lv_color_hex(0xFFFFFF) : lv_color_hex(0x555555), 0);
         bsp_display_unlock();
     }
+    wifi_mqtt_publish_relay_state(idx, on);
 }
 
 static void relay_cb(lv_event_t *e)
@@ -388,9 +415,10 @@ static void sensor_read_task(void *arg)
 
             bsp_display_lock(0);
             ui_user_update(t_cal, h_cal, p25_cal, p10_cal, (int)s_cal);
-            ui_pm_update(p25_cal, p10_cal);
+            ui_pm_update(t_cal, h_cal, p25_cal, p10_cal, (float)s_cal);
             ui_dev_update(temp, hum, (float)snd, pm25, pm10);
-            ui_exec_update(p25_cal, p10_cal, (int)s_cal);
+            ui_exec_update(t_cal, h_cal, p25_cal, p10_cal);
+            ui_alert_check(t_cal, h_cal, p25_cal, p10_cal, s_cal);
             bsp_display_unlock();
 
             wifi_mqtt_publish_sensors(t_cal, h_cal, (int)s_cal, p25_cal, p10_cal);
@@ -528,6 +556,46 @@ void on_mode_changed(app_mode_t new_mode)
 
 // ─── app_main ──────────────────────────────────────────
 
+static void on_test_alert(const char *json, int len)
+{
+    char buf[128];
+    int  n = len < (int)sizeof(buf) - 1 ? len : (int)sizeof(buf) - 1;
+    memcpy(buf, json, n); buf[n] = '\0';
+
+    cJSON *root = cJSON_Parse(buf);
+    if (!root) return;
+
+    float temp  = cJSON_IsNumber(cJSON_GetObjectItem(root, "temp"))  ? (float)cJSON_GetObjectItem(root, "temp")->valuedouble  : NAN;
+    float hum   = cJSON_IsNumber(cJSON_GetObjectItem(root, "hum"))   ? (float)cJSON_GetObjectItem(root, "hum")->valuedouble   : NAN;
+    float pm25  = cJSON_IsNumber(cJSON_GetObjectItem(root, "pm25"))  ? (float)cJSON_GetObjectItem(root, "pm25")->valuedouble  : NAN;
+    float pm10  = cJSON_IsNumber(cJSON_GetObjectItem(root, "pm10"))  ? (float)cJSON_GetObjectItem(root, "pm10")->valuedouble  : NAN;
+    float sound = cJSON_IsNumber(cJSON_GetObjectItem(root, "sound")) ? (float)cJSON_GetObjectItem(root, "sound")->valuedouble : NAN;
+    cJSON_Delete(root);
+
+    if (bsp_display_lock(0)) {
+        ui_alert_check(temp, hum, pm25, pm10, sound);
+        bsp_display_unlock();
+    }
+}
+
+static void on_hist_24h(const char *d, int len)
+{
+    hist_parse_24h(d, len);
+    if (bsp_display_lock(0)) {
+        ui_pm_refresh_history();
+        bsp_display_unlock();
+    }
+}
+
+static void on_hist_7d(const char *d, int len)
+{
+    hist_parse_7d(d, len);
+    if (bsp_display_lock(0)) {
+        ui_exec_update_history();
+        bsp_display_unlock();
+    }
+}
+
 static void logo_url_received(const char *url)
 {
     ESP_LOGI(TAG, "Logo URL: %s", url);
@@ -629,6 +697,7 @@ extern "C" void app_main(void)
     ui_dev_create();
     ui_exec_create();
     touch_nav_init();
+    ui_alert_init();
     lv_scr_load(scr[0]);     // show logo splash — inside the same lock block
     bsp_display_unlock();
 
@@ -644,6 +713,8 @@ extern "C" void app_main(void)
     // IP_EVENT_ETH_GOT_IP handler must already be registered when it fires.
     wifi_mqtt_set_relay_cb(relay_set_state);
     wifi_mqtt_set_logo_url_cb(logo_url_received);
+    wifi_mqtt_set_history_cb(on_hist_24h, on_hist_7d);
+    wifi_mqtt_set_test_alert_cb(on_test_alert);
     wifi_mqtt_init(MQTT_BROKER_URI);
     eth_start_background();
 

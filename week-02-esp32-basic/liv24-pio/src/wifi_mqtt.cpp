@@ -14,8 +14,11 @@ static const char *TAG = "MQTT";
 
 static esp_mqtt_client_handle_t s_mqtt       = NULL;
 static volatile bool             s_mqtt_ready = false;
-static void (*s_relay_cb)(int, bool)         = NULL;
-static void (*s_logo_url_cb)(const char *)   = NULL;
+static void (*s_relay_cb)(int, bool)             = NULL;
+static void (*s_logo_url_cb)(const char *)       = NULL;
+static void (*s_hist_24h_cb)(const char *, int)  = NULL;
+static void (*s_hist_7d_cb )(const char *, int)  = NULL;
+static void (*s_test_alert_cb)(const char *, int) = NULL;
 static char s_broker_uri[128];
 
 // ── MQTT events ───────────────────────────────────────────────────────────────
@@ -29,9 +32,13 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
     case MQTT_EVENT_CONNECTED:
         ESP_LOGI(TAG, "MQTT connected → %s", s_broker_uri);
         s_mqtt_ready = true;
-        esp_mqtt_client_subscribe(s_mqtt, "liv24/relay/1/set", 0);
-        esp_mqtt_client_subscribe(s_mqtt, "liv24/relay/2/set", 0);
-        esp_mqtt_client_subscribe(s_mqtt, "liv24/logo/url",    1);
+        esp_mqtt_client_subscribe(s_mqtt, "liv24/relay/1/set",  0);
+        esp_mqtt_client_subscribe(s_mqtt, "liv24/relay/2/set",  0);
+        esp_mqtt_client_subscribe(s_mqtt, "liv24/logo/url",     1);
+        esp_mqtt_client_subscribe(s_mqtt, "liv24/history/24h",  1);
+        esp_mqtt_client_subscribe(s_mqtt, "liv24/history/7d",   1);
+        esp_mqtt_client_subscribe(s_mqtt, "liv24/test/alert",   0);
+        // broker delivers retained messages automatically on subscribe — no request needed
         break;
 
     case MQTT_EVENT_DISCONNECTED:
@@ -47,6 +54,18 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
                        ? ev->topic_len : (int)sizeof(topic) - 1;
             memcpy(topic, ev->topic, tlen);
 
+            if (strcmp(topic, "liv24/history/24h") == 0) {
+                if (s_hist_24h_cb) s_hist_24h_cb(ev->data, ev->data_len);
+                break;
+            }
+            if (strcmp(topic, "liv24/history/7d") == 0) {
+                if (s_hist_7d_cb) s_hist_7d_cb(ev->data, ev->data_len);
+                break;
+            }
+            if (strcmp(topic, "liv24/test/alert") == 0) {
+                if (s_test_alert_cb) s_test_alert_cb(ev->data, ev->data_len);
+                break;
+            }
             if (strcmp(topic, "liv24/logo/url") == 0) {
                 if (s_logo_url_cb && ev->data_len > 0) {
                     char url[256] = {};
@@ -87,6 +106,7 @@ static void start_mqtt_client(void)
     }
     esp_mqtt_client_config_t cfg = {};
     cfg.broker.address.uri = s_broker_uri;
+    cfg.buffer.size        = 2048;
 #ifdef MQTT_USERNAME
     cfg.credentials.username = MQTT_USERNAME;
     cfg.credentials.authentication.password = MQTT_PASSWORD;
@@ -209,9 +229,29 @@ void wifi_mqtt_set_logo_url_cb(void (*cb)(const char *url))
     s_logo_url_cb = cb;
 }
 
+void wifi_mqtt_set_history_cb(void (*cb24h)(const char *d, int len),
+                              void (*cb7d )(const char *d, int len))
+{
+    s_hist_24h_cb = cb24h;
+    s_hist_7d_cb  = cb7d;
+}
+
+void wifi_mqtt_set_test_alert_cb(void (*cb)(const char *json, int len))
+{
+    s_test_alert_cb = cb;
+}
+
 bool wifi_mqtt_is_connected(void)
 {
     return s_mqtt_ready;
+}
+
+void wifi_mqtt_publish_relay_state(int idx, bool on)
+{
+    if (!s_mqtt_ready) return;
+    char topic[32];
+    snprintf(topic, sizeof(topic), "liv24/relay/%d/state", idx + 1);
+    esp_mqtt_client_publish(s_mqtt, topic, on ? "ON" : "OFF", 0, 1, 1);
 }
 
 void wifi_mqtt_publish_sensors(float temp, float hum, int sound,
