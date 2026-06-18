@@ -406,6 +406,7 @@ static void sensor_read_task(void *arg)
             float s_cal   = calib_apply((float)snd,  &g_calib.sound);
 
             bsp_display_lock(0);
+            ui_alert_set_mqtt_status(wifi_mqtt_is_connected());
             ui_user_update(t_cal, h_cal, p25_cal, p10_cal, (int)s_cal);
             ui_pm_update(t_cal, h_cal, p25_cal, p10_cal, (float)s_cal);
             ui_dev_update(temp, hum, (float)snd, pm25, pm10);

@@ -5,6 +5,7 @@
 
 static lv_obj_t *s_banner = NULL;
 static lv_obj_t *s_lbl    = NULL;
+static lv_obj_t *s_dot    = NULL;
 
 static void msg_cat(char *dst, size_t sz, const char *src)
 {
@@ -24,6 +25,15 @@ void ui_alert_init(void)
     lv_obj_set_style_bg_opa(s_banner, LV_OPA_COVER, 0);
     lv_obj_clear_flag(s_banner, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_banner, LV_OBJ_FLAG_HIDDEN);
+
+    // MQTT status dot — bottom-left, always visible across all screens
+    s_dot = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(s_dot, 12, 12);
+    lv_obj_set_style_radius(s_dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(s_dot, 0, 0);
+    lv_obj_set_style_pad_all(s_dot, 0, 0);
+    lv_obj_set_style_bg_color(s_dot, lv_color_hex(0xFF3333), 0);
+    lv_obj_align(s_dot, LV_ALIGN_BOTTOM_LEFT, 14, -14);
 
     s_lbl = lv_label_create(s_banner);
     lv_obj_set_style_text_font(s_lbl, &lv_font_montserrat_24, 0);
@@ -75,4 +85,11 @@ void ui_alert_check(float temp, float hum, float pm25, float pm10, float sound)
     lv_label_set_text(s_lbl, msg);
     lv_obj_set_style_bg_color(s_banner, lv_color_hex(SEV_COL[sev]), 0);
     lv_obj_clear_flag(s_banner, LV_OBJ_FLAG_HIDDEN);
+}
+
+void ui_alert_set_mqtt_status(bool connected)
+{
+    if (!s_dot) return;
+    lv_obj_set_style_bg_color(s_dot,
+        lv_color_hex(connected ? 0x00C853u : 0xFF3333u), 0);
 }
