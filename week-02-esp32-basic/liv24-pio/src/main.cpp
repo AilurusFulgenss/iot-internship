@@ -290,12 +290,6 @@ static void create_relay_ctrl(void)
     lv_obj_set_style_text_font(lbl_title, &lv_font_montserrat_32, 0);
     lv_obj_align(lbl_title, LV_ALIGN_LEFT_MID, title_x, 0);
 
-    lv_obj_t *lbl_nav = lv_label_create(hdr);
-    lv_label_set_text(lbl_nav, "< PM");
-    lv_obj_set_style_text_color(lbl_nav, lv_color_hex(0x3A4A5A), 0);
-    lv_obj_set_style_text_font(lbl_nav, &lv_font_montserrat_14, 0);
-    lv_obj_align(lbl_nav, LV_ALIGN_RIGHT_MID, 0, 0);
-
     // ── Relay buttons — shifted +72px for header ──────────
     // Button 1: y=252 (was 180), Button 2: y=492 (was 420)
     // Button 2 bottom: 492+140=632, margin to screen bottom: 88px ✓
@@ -323,8 +317,6 @@ static void create_relay_ctrl(void)
         lv_obj_center(relay_btn_lbl[i]);
     }
 
-    make_label(scr[2], "Hold 7s = Dev", 0x223344, &lv_font_montserrat_14,
-               LV_ALIGN_BOTTOM_MID, 0, -16);
 }
 
 // ─── RS485 / MODBUS RTU ────────────────────────────────

@@ -333,13 +333,6 @@ void ui_user_create(void)
     lv_obj_set_style_text_font(lbl_snd_u, &lv_font_montserrat_24, 0);
     lv_obj_align(lbl_snd_u, LV_ALIGN_RIGHT_MID, -8, 10);
 
-    // Footer hint
-    lv_obj_t *lbl_hint = lv_label_create(cont);
-    lv_label_set_text(lbl_hint, "Hold 7s = Dev  |  Hold 10s = Exec");
-    lv_obj_set_style_text_color(lbl_hint, lv_color_hex(0x222233), 0);
-    lv_obj_set_style_text_font(lbl_hint, &lv_font_montserrat_14, 0);
-    lv_obj_set_width(lbl_hint, 688);
-    lv_obj_set_style_text_align(lbl_hint, LV_TEXT_ALIGN_CENTER, 0);
 }
 
 // ── ui_user_update (called from sensor task with display lock held) ──────────

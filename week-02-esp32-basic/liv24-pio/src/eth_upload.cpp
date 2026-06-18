@@ -66,6 +66,7 @@ void eth_upload_clear_logo(void)
     };
     esp_vfs_spiffs_register(&conf);   // ignore error if already mounted
     remove(ETH_LOGO_SPIFFS);
+    remove(ETH_LOGO_HD_SPIFFS);
     s_has_logo = false;
     ESP_LOGW(TAG, "Logo cleared from SPIFFS");
 }
@@ -98,36 +99,48 @@ static const char HTML[] =
 "<body>"
 "<h2>LIV24 Logo Setup</h2>"
 "<p>Connected via <b style='color:#00ff88'>Ethernet</b> — upload your logo below.</p>"
-"<p style='color:#334455;font-size:12px'>Upload JPEG logo — any size, device auto-scales to 48×48</p>"
+"<p style='color:#334455;font-size:12px'>PNG or JPEG — browser resizes to 128×128 before upload</p>"
 "<div id='zone' onclick=\"document.getElementById('f').click()\">"
-"<p style='color:#445566'>Tap to choose JPEG file</p>"
-"<input type='file' id='f' accept='image/jpeg,.jpg' style='display:none' onchange='picked(this)'>"
+"<p style='color:#445566'>Tap to choose image</p>"
+"<input type='file' id='f' accept='image/*' style='display:none' onchange='picked(this)'>"
 "</div>"
 "<img id='preview' alt=''>"
 "<button id='btn' disabled onclick='doUpload()'>Upload &amp; Restart</button>"
 "<div id='st'></div>"
 "<script>"
-"var file=null;"
+"var b48=null,b192=null;"
+"function mkBlob(img,sz,cb){"
+"  var c=document.createElement('canvas');c.width=sz;c.height=sz;"
+"  var x=c.getContext('2d');"
+"  x.fillStyle='#fff';x.fillRect(0,0,sz,sz);"
+"  var s=Math.min(sz/img.width,sz/img.height);"
+"  x.drawImage(img,(sz-img.width*s)/2,(sz-img.height*s)/2,img.width*s,img.height*s);"
+"  c.toBlob(function(b){cb(b,c);},'image/jpeg',0.9);"
+"}"
 "function picked(inp){"
-"file=inp.files[0];if(!file)return;"
-"var r=new FileReader();"
-"r.onload=function(e){"
-"var img=document.getElementById('preview');"
-"img.src=e.target.result;img.style.display='block';"
-"document.getElementById('zone').innerHTML='<p style=\\'color:#00e5ff\\'>'+file.name+'<br><small style=\\'color:#445566\\'>'+Math.round(file.size/1024)+' KB</small></p>';"
-"document.getElementById('btn').disabled=false;"
-"};"
-"r.readAsDataURL(file);"
+"  var file=inp.files[0];if(!file)return;"
+"  var img=new Image();"
+"  img.onload=function(){"
+"    mkBlob(img,48,function(b){b48=b;"
+"      mkBlob(img,192,function(b2,c){b192=b2;"
+"        document.getElementById('preview').src=c.toDataURL();"
+"        document.getElementById('preview').style.display='block';"
+"        document.getElementById('zone').innerHTML='<p style=\\'color:#00e5ff\\'>'+file.name+'</p>';"
+"        document.getElementById('btn').disabled=false;"
+"      });"
+"    });"
+"  };"
+"  img.src=URL.createObjectURL(file);"
 "}"
 "function doUpload(){"
-"if(!file)return;"
-"var btn=document.getElementById('btn');"
-"var st=document.getElementById('st');"
-"btn.disabled=true;st.style.color='#00e5ff';st.innerText='Uploading...';"
-"fetch('/upload',{method:'POST',headers:{'Content-Type':'image/jpeg'},body:file})"
-".then(function(r){return r.text();})"
-".then(function(t){st.style.color='#00cc44';st.innerText=t;})"
-".catch(function(e){st.style.color='#ff4444';st.innerText='Error: '+e;btn.disabled=false;});"
+"  if(!b48||!b192)return;"
+"  var btn=document.getElementById('btn'),st=document.getElementById('st');"
+"  btn.disabled=true;st.style.color='#00e5ff';st.innerText='Uploading...';"
+"  fetch('/upload_hd',{method:'POST',headers:{'Content-Type':'image/jpeg'},body:b192})"
+"  .then(function(){return fetch('/upload',{method:'POST',headers:{'Content-Type':'image/jpeg'},body:b48});})"
+"  .then(function(r){return r.text();})"
+"  .then(function(t){st.style.color='#00cc44';st.innerText=t;})"
+"  .catch(function(e){st.style.color='#ff4444';st.innerText='Error: '+e;btn.disabled=false;});"
 "}"
 "</script>"
 "</body>"
@@ -137,6 +150,44 @@ static esp_err_t get_root_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, HTML, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t save_to_path(httpd_req_t *req, const char *path)
+{
+    const size_t MAX_SIZE = 512 * 1024;
+    if (req->content_len == 0 || req->content_len > MAX_SIZE) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad size");
+        return ESP_FAIL;
+    }
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "File open failed");
+        return ESP_FAIL;
+    }
+    uint8_t buf[512];
+    int remaining = (int)req->content_len;
+    bool ok = true;
+    while (remaining > 0) {
+        int to_read = remaining < (int)sizeof(buf) ? remaining : (int)sizeof(buf);
+        int received = httpd_req_recv(req, (char *)buf, to_read);
+        if (received <= 0) { ok = false; break; }
+        if (fwrite(buf, 1, received, f) != (size_t)received) { ok = false; break; }
+        remaining -= received;
+    }
+    fclose(f);
+    if (!ok) { remove(path); return ESP_FAIL; }
+    return ESP_OK;
+}
+
+static esp_err_t post_upload_hd_handler(httpd_req_t *req)
+{
+    if (save_to_path(req, ETH_LOGO_HD_SPIFFS) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "HD upload failed");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "logo_hd.jpg saved (%d bytes)", (int)req->content_len);
+    httpd_resp_sendstr(req, "ok");
+    return ESP_OK;
 }
 
 static esp_err_t post_upload_handler(httpd_req_t *req)
@@ -365,17 +416,19 @@ void eth_upload_start(lv_obj_t *qr_obj, lv_obj_t *ip_label)
     httpd_handle_t server = NULL;
     httpd_config_t http_cfg = HTTPD_DEFAULT_CONFIG();
     http_cfg.stack_size       = 8192;
-    http_cfg.max_uri_handlers = 4;
+    http_cfg.max_uri_handlers = 5;
 
     if (httpd_start(&server, &http_cfg) != ESP_OK) {
         ESP_LOGE(TAG, "HTTP server start failed");
         return;
     }
 
-    httpd_uri_t uri_root   = { "/",       HTTP_GET,  get_root_handler,    NULL };
-    httpd_uri_t uri_upload = { "/upload", HTTP_POST, post_upload_handler, NULL };
+    httpd_uri_t uri_root      = { "/",          HTTP_GET,  get_root_handler,        NULL };
+    httpd_uri_t uri_upload    = { "/upload",    HTTP_POST, post_upload_handler,     NULL };
+    httpd_uri_t uri_upload_hd = { "/upload_hd", HTTP_POST, post_upload_hd_handler,  NULL };
     httpd_register_uri_handler(server, &uri_root);
     httpd_register_uri_handler(server, &uri_upload);
+    httpd_register_uri_handler(server, &uri_upload_hd);
 
     ESP_LOGI(TAG, "HTTP server ready — waiting for upload");
 

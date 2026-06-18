@@ -3,12 +3,15 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "mqtt_client.h"
+#include "esp_sntp.h"
 #include "lwip/ip4_addr.h"
 #include "lwip/sockets.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
 
 static const char *TAG = "MQTT";
 
@@ -173,6 +176,15 @@ static void eth_got_ip_handler(void *arg, esp_event_base_t base,
     esp_netif_set_dns_info(ev->esp_netif, ESP_NETIF_DNS_BACKUP, &dns);
     ESP_LOGI(TAG, "DNS set: primary=" STATIC_GW_ADDR " backup=8.8.8.8");
 #endif
+
+    // Sync time via NTP — Bangkok timezone (UTC+7)
+    setenv("TZ", "ICT-7", 1);
+    tzset();
+    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_setservername(1, "time.cloudflare.com");
+    esp_sntp_init();
+    ESP_LOGI(TAG, "SNTP started — syncing time");
 
     xTaskCreate(mqtt_start_task, "mqtt_start", 4096, NULL, 3, NULL);
 }

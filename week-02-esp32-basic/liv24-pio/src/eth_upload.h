@@ -2,8 +2,10 @@
 #include <stdbool.h>
 #include "lvgl.h"
 
-#define ETH_LOGO_LVGL_PATH  "A:/logo.jpg"
-#define ETH_LOGO_SPIFFS     "/spiffs/logo.jpg"
+#define ETH_LOGO_LVGL_PATH     "A:/logo.jpg"
+#define ETH_LOGO_SPIFFS        "/spiffs/logo.jpg"
+#define ETH_LOGO_HD_LVGL_PATH  "A:/logo_hd.jpg"
+#define ETH_LOGO_HD_SPIFFS     "/spiffs/logo_hd.jpg"
 
 #ifdef __cplusplus
 extern "C" {

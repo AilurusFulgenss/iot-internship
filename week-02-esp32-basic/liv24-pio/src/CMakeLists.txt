@@ -13,4 +13,5 @@ idf_component_register(
         spiffs
         nvs_flash
         driver
+        json
 )

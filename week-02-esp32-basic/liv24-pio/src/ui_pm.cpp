@@ -4,6 +4,7 @@
 #include "lvgl.h"
 #include <stdio.h>
 #include <math.h>
+#include <time.h>
 
 lv_obj_t *scr_pm = NULL;
 
@@ -146,10 +147,20 @@ static void refresh_cards(void)
         int  hours_ago = has_data ? (n - 1 - data_idx) : -1;
         float v        = has_data ? g_hist_24h.d[hi][data_idx] : NAN;
 
-        // Hour label
+        // Hour label — show actual time if SNTP synced, else relative
         char hbuf[8];
-        if (has_data && hours_ago == 0) snprintf(hbuf, sizeof(hbuf), "Now");
-        else                            snprintf(hbuf, sizeof(hbuf), "-%dh", 23 - i);
+        time_t now_t = time(NULL);
+        bool synced  = (now_t > 1700000000);  // valid if after Nov 2023
+        if (synced && has_data) {
+            struct tm ti;
+            localtime_r(&now_t, &ti);
+            int h = ((ti.tm_hour - hours_ago) % 24 + 24) % 24;
+            snprintf(hbuf, sizeof(hbuf), "%02d:00", h);
+        } else if (has_data && hours_ago == 0) {
+            snprintf(hbuf, sizeof(hbuf), "Now");
+        } else {
+            snprintf(hbuf, sizeof(hbuf), "-%dh", 23 - i);
+        }
         lv_label_set_text(s_card_hr[i], hbuf);
         lv_obj_set_style_text_color(s_card_hr[i],
             lv_color_hex((has_data && hours_ago == 0) ? 0x00E5FFu : 0x445566u), 0);
@@ -224,12 +235,6 @@ void ui_pm_create(void)
     lv_obj_set_style_text_color(lbl_title, lv_color_hex(0x00E5FF), 0);
     lv_obj_set_style_text_font(lbl_title, &lv_font_montserrat_32, 0);
     lv_obj_align(lbl_title, LV_ALIGN_LEFT_MID, title_x, 0);
-
-    lv_obj_t *lbl_nav = lv_label_create(hdr);
-    lv_label_set_text(lbl_nav, "< USER RELAY >");
-    lv_obj_set_style_text_color(lbl_nav, lv_color_hex(0x3A4A5A), 0);
-    lv_obj_set_style_text_font(lbl_nav, &lv_font_montserrat_14, 0);
-    lv_obj_align(lbl_nav, LV_ALIGN_RIGHT_MID, 0, 0);
 
     // ── Tab bar (y=72, h=48) ──────────────────────────────────────────────────
     const int TW = 144;  // 720/5

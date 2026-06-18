@@ -115,6 +115,6 @@ void btn_mode_init(gpio_num_t gpio)
     cfg.intr_type    = GPIO_INTR_DISABLE;
     gpio_config(&cfg);
 
-    xTaskCreate(button_task, "btn", 2048, NULL, 4, NULL);
+    xTaskCreate(button_task, "btn", 8192, NULL, 4, NULL);
     ESP_LOGI(TAG, "btn_mode_init done (GPIO%d)", gpio);
 }
