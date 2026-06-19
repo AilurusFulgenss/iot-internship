@@ -26,7 +26,13 @@
 
 5. **ระบบ Alert บนหน้าจอ** — ใช้ `lv_layer_top()` สร้าง banner overlay ที่แสดงทับทุกหน้าเมื่อค่าเกิน threshold (Temp >35°C, Hum <30%, PM2.5 >35.4, PM10 >254) แสดงสีตามความรุนแรง เหลือง/ส้ม/แดง
 
-6. **LINE Notification** — เมื่อค่า sensor เกิน threshold HA automation ส่ง LINE message ผ่าน LINE Messaging API โดยมี debounce 2 นาทีกันข้อความ spam
+6. **LINE Notification** — เมื่อค่า sensor เกิน threshold จะมีการแจ้งเตือนผ่าน LINE ตามเงื่อนไขดังนี้
+   - ESP ส่งค่า sensor ขึ้น Home Assistant ทุก 2 วินาที
+   - HA ตรวจสอบว่าค่าเกิน threshold หรือไม่ (เช่น PM2.5 > 35.4 µg/m³ หรือ Temp > 35°C)
+   - **ถ้าค่าเกินต่อเนื่องครบ 2 นาที** → HA ส่ง LINE message 1 ครั้ง ผ่าน LINE Messaging API (`api.line.me/v2/bot/message/push`)
+   - ถ้าค่ากลับมาปกติก่อนครบ 2 นาที → ยกเลิก ไม่ส่ง LINE
+   - หลังส่งแล้ว ถ้าค่ายังเกินต่อเนื่อง → **ไม่ส่งซ้ำ** จนกว่าค่าจะกลับมาปกติก่อน แล้วเกินใหม่อีกครั้ง + รออีก 2 นาที ถึงจะส่งครั้งต่อไป
+   - วิธีนี้ป้องกันข้อความ spam กรณีค่า sensor กระเพื่อมขึ้นลงรอบ threshold ตลอดเวลา
 
 7. **Setup Mode บน Web Browser** — เมื่อยังไม่มี logo ESP จะเปิด HTTP server ที่ IP ตัวเอง ให้ผู้ใช้เปิด browser เข้ามา upload logo บริษัท, เลือก sensor model, และตั้ง Modbus Slave ID โดยข้อมูลบันทึกลง flash (NVS + SPIFFS) ไม่หายหลัง reboot
 
