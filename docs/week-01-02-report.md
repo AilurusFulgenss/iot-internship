@@ -59,13 +59,35 @@
 
 ## ปัญหาที่พบ
 
-1. ESP32-P4 GPIO ไม่ตรงกับ datasheet ทั่วไป — BOOT button อยู่ GPIO35, Relay อยู่ GPIO32/46, RS485 อยู่ GPIO47/48 ทำให้ตอนแรก peripheral ไม่ทำงาน
-2. LINE Notify API ถูกปิดให้บริการไปแล้ว (มีนาคม 2568) ทำให้ต้องเปลี่ยนวิธีส่ง notification
+1. **GPIO ไม่ตรงกับ datasheet ทั่วไป** — BOOT button, Relay, และ RS485 อยู่คนละ GPIO กับที่ระบุใน ESP32 datasheet ทั่วไป ทำให้ตอนแรก peripheral ไม่ทำงานเลย
+
+2. **Build error: LVGL 9 API เปลี่ยนจาก v8** — เรียกใช้ `lv_qrcode_set_src()` แล้ว compiler ฟ้อง `not declared` เพราะ LVGL 9 เปลี่ยน API ใหม่หมด ต้องค้นหา function ที่ถูกต้องใหม่ทุกครั้ง
+
+3. **Task Watchdog (WDT) crash ตอน Setup Mode** — หลังเพิ่มระบบ Alert เสร็จ พอเข้า Setup Mode ESP บูตแล้วค้าง ขึ้น log `Task watchdog got triggered` และ reboot วนไม่หยุด สาเหตุคือ `ui_alert_check()` ถูกเรียกจาก sensor task แม้ตอน Setup Mode แต่ `ui_alert_init()` ยังไม่ถูกเรียก ทำให้ `s_banner = NULL` แล้วโค้ดพยายาม access NULL pointer ข้างใน display lock ทำให้ LVGL hang และ IDLE task ถูก starve จน WDT ดัง
+
+4. **อัป logo รูปแล้ว ESP crash ตอน restart** — หลัง upload รูปเสร็จ ESP เรียก `esp_restart()` ทันที แต่ปรากฏว่า Ethernet DMA ยังทำงานอยู่ระหว่าง reset ทำให้ DMA เขียนทับ bootloader code ใน SRAM และขึ้น `Illegal instruction` crash บูตไม่ขึ้น ต้องกด flash ใหม่ทุกครั้งที่อัปรูป
+
+5. **PM History กราฟ 7 วันทำไม่ได้บน ESP อย่างเดียว** — ตอนแรกออกแบบให้ ESP เก็บค่าเฉลี่ยรายวันไว้ใน RAM เอง แต่ติดปัญหาคือข้อมูลหายทุกครั้งที่ reboot และ ESP ไม่มี RTC จริงๆ ทำให้ไม่รู้ว่าแต่ละวันคือวันไหน ข้อมูลจึงไม่ถูกต้อง
+
+6. **Relay state ไม่ sync กับ HA** — ตอนแรก HA ส่ง command มาควบคุม relay ได้ แต่ถ้ากด relay จากหน้าจอ ESP โดยตรง HA ไม่รู้ว่า state เปลี่ยน dashboard ยังแสดงค่าเก่าอยู่ และถ้ากดจาก HA อีกครั้ง state จะสลับผิดทิศทาง
+
+7. **DNS ล้มเหลวตอนต่อ MQTT ครั้งแรก** — หลังได้ IP จาก Ethernet แล้วพยายาม connect MQTT broker ด้วย hostname แต่ `getaddrinfo()` ฟ้อง `EAI_AGAIN` ทุกครั้ง เพราะ ARP cache ยังไม่มี entry ของ gateway ทำให้ DNS query แรกไม่ได้รับ reply ก่อน timeout
 
 ## วิธีแก้ไข
 
-1. ดู schematic ของ Waveshare ESP32-P4-86-Panel โดยตรง และทดสอบ GPIO ทีละตัว จนพบค่าที่ถูกต้องสำหรับบอร์ดนี้
-2. เปลี่ยนมาใช้ LINE Messaging API แทน โดยสร้าง LINE Official Account และใช้ `rest_command` ใน HA ส่ง HTTP POST ไปที่ `api.line.me/v2/bot/message/push`
+1. ดู schematic ของ Waveshare ESP32-P4-86-Panel โดยตรงและทดสอบ GPIO ทีละตัว พบว่า BOOT=GPIO35, Relay=GPIO32/46, RS485=GPIO47(TX)/48(RX)
+
+2. ค้นหาใน LVGL 9 source code และ changelog พบว่าต้องใช้ `lv_qrcode_update(obj, data, len)` แทน `lv_qrcode_set_src()` และ API หลายตัวมีการเปลี่ยนชื่อใหม่ทั้งหมด
+
+3. เพิ่ม NULL check `if (!s_banner) return;` ไว้ต้นฟังก์ชัน `ui_alert_check()` เพื่อให้ return ออกทันทีถ้า `ui_alert_init()` ยังไม่ถูกเรียก ทำให้ Setup Mode ทำงานได้ปกติ
+
+4. แก้โดยเรียก `esp_eth_stop()` ก่อนแล้วรอ 200ms ให้ DMA หยุดทำงานก่อนค่อยเรียก `esp_restart()` ทำให้ ESP restart สะอาดโดยไม่ crash
+
+5. ย้ายการเก็บ history ไปไว้บน Home Assistant (Raspberry Pi) แทน โดย HA บันทึกค่าเฉลี่ยรายชั่วโมงลง database ตัวเอง แล้วส่งกลับมาให้ ESP ผ่าน MQTT เมื่อ ESP connect HA จะส่ง retained message ที่เก็บไว้มาให้ทันที ทำให้ได้ข้อมูลย้อนหลังที่ถูกต้องแม้ ESP reboot
+
+6. แก้โดยให้ ESP publish relay state กลับไปที่ MQTT topic `liv24/relay/N/state` ทุกครั้งที่มีการเปลี่ยน state ไม่ว่าจะมาจากหน้าจอหรือจาก HA ทำให้ HA รับรู้ state จริงตลอดเวลา
+
+7. แก้โดยเพิ่ม TCP probe ไปที่ gateway ก่อนเริ่ม MQTT client เพื่อ warm up ARP cache ให้ lwIP มี entry ของ gateway พร้อมก่อนที่ DNS query จะส่งออก
 
 ## สิ่งที่ได้เรียนรู้
 
