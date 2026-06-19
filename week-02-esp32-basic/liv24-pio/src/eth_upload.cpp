@@ -1,4 +1,5 @@
 #include "eth_upload.h"
+#include "sensor_config.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_eth.h"
@@ -17,6 +18,7 @@
 #include <sys/stat.h>
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 
 static const char *TAG = "ETH_UPLOAD";
 static bool s_has_logo = false;
@@ -77,6 +79,7 @@ static const char HTML[] =
 "<!DOCTYPE html>"
 "<html lang='en'>"
 "<head>"
+"<meta charset='utf-8'>"
 "<meta name='viewport' content='width=device-width,initial-scale=1'>"
 "<title>LIV24 Setup</title>"
 "<style>"
@@ -141,6 +144,59 @@ static const char HTML[] =
 "  .then(function(r){return r.text();})"
 "  .then(function(t){st.style.color='#00cc44';st.innerText=t;})"
 "  .catch(function(e){st.style.color='#ff4444';st.innerText='Error: '+e;btn.disabled=false;});"
+"}"
+"</script>"
+"<hr style='border:1px solid #1a2a3a;margin:28px 0'>"
+"<h2>Sensor Config</h2>"
+"<p>Choose which sensor is plugged into RS485</p>"
+"<select id='sm' style='width:100%;padding:12px;background:#111;color:#eee;"
+"border:1px solid #334455;border-radius:8px;font-size:15px;margin:8px 0'>"
+"<option value='0'>SN-300BYH-M</option>"
+"<option value='1'>Model-2 (TBD)</option>"
+"</select>"
+"<div style='display:flex;align-items:center;gap:12px;margin:8px 0'>"
+"<span style='color:#556677;font-size:14px;white-space:nowrap'>Slave ID</span>"
+"<input type='number' id='sid' min='1' max='247' value='1'"
+" style='flex:1;padding:10px;background:#111;color:#eee;"
+"border:1px solid #334455;border-radius:8px;font-size:15px'>"
+"</div>"
+"<button onclick='saveSensor()'>Save Sensor Config</button>"
+"<div id='sst' style='margin-top:10px;min-height:20px;font-size:14px;color:#00cc44'></div>"
+"<script>"
+"fetch('/sensor_info').then(function(r){return r.json();}).then(function(d){"
+"  document.getElementById('sm').value=d.model;"
+"  document.getElementById('sid').value=d.slave;"
+"});"
+"function saveSensor(){"
+"  var m=document.getElementById('sm').value;"
+"  var s=document.getElementById('sid').value;"
+"  var ss=document.getElementById('sst');"
+"  fetch('/sensor_cfg',{method:'POST',"
+"    headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+"    body:'model='+m+'&slave='+s})"
+"  .then(function(r){return r.text();})"
+"  .then(function(t){ss.style.color='#00cc44';ss.innerText=t;})"
+"  .catch(function(e){ss.style.color='#ff4444';ss.innerText='Error: '+e;});"
+"}"
+"</script>"
+"<hr style='border:1px solid #1a2a3a;margin:20px 0'>"
+"<button id='tbtn' onclick='testSensor()'"
+" style='background:#0a2018;color:#00cc44;border:1px solid #00cc44'>Test Connection</button>"
+"<div id='tst' style='margin-top:10px;font-size:13px;text-align:left;"
+"background:#0a1a14;border-radius:8px;padding:10px;display:none;line-height:1.8'></div>"
+"<script>"
+"function testSensor(){"
+"  var tst=document.getElementById('tst'),tb=document.getElementById('tbtn');"
+"  tb.disabled=true;tst.style.display='block';tst.style.color='#aabbcc';tst.innerText='Testing...';"
+"  fetch('/sensor_test').then(function(r){return r.json();}).then(function(d){"
+"    tb.disabled=false;"
+"    if(!d.ok){tst.innerHTML='<span style=\"color:#ff4444\">✗ '+d.error+'</span>';return;}"
+"    tst.innerHTML='<span style=\"color:#00cc44\">✓ Sensor responded</span><br>'"
+"      +'<span style=\"color:#778899\">'+d.model+' | Slave: '+d.slave+'</span><br>'"
+"      +'<span style=\"color:#556677\">Raw: ['+d.regs.join(', ')+']</span><br>'"
+"      +'Temp: <b>'+d.temp+'&deg;C</b>  Hum: <b>'+d.hum+'%</b><br>'"
+"      +'PM2.5: <b>'+d.pm25+'</b>  PM10: <b>'+d.pm10+'</b>  Sound: <b>'+d.sound+' dB</b>';"
+"  }).catch(function(e){tb.disabled=false;tst.innerHTML='<span style=\"color:#ff4444\">Error: '+e+'</span>';});"
 "}"
 "</script>"
 "</body>"
@@ -236,6 +292,75 @@ static esp_err_t post_upload_handler(httpd_req_t *req)
     if (s_eth_handle) esp_eth_stop(s_eth_handle);
     vTaskDelay(pdMS_TO_TICKS(200));
     esp_restart();
+    return ESP_OK;
+}
+
+// ── Sensor config handlers ────────────────────────────────────────────────────
+
+static esp_err_t get_sensor_test_handler(httpd_req_t *req)
+{
+    sensor_config_t      cfg = sensor_config_get();
+    const sensor_model_t *m  = &SENSOR_MODELS[cfg.model_idx];
+    sensor_last_raw_t    raw = sensor_get_raw();
+
+    char json[320];
+    if (!raw.valid) {
+        snprintf(json, sizeof(json), "{\"ok\":false,\"error\":\"No reading yet\"}");
+    } else {
+        char regs_str[80] = "[";
+        for (int i = 0; i < raw.count; i++) {
+            char tmp[12];
+            snprintf(tmp, sizeof(tmp), i < raw.count - 1 ? "%d," : "%d]", raw.regs[i]);
+            strncat(regs_str, tmp, sizeof(regs_str) - strlen(regs_str) - 1);
+        }
+        float temp  = (m->idx_temp  >= 0) ? raw.regs[m->idx_temp]  / m->scale : NAN;
+        float hum   = (m->idx_hum   >= 0) ? raw.regs[m->idx_hum]   / m->scale : NAN;
+        float pm10  = (m->idx_pm10  >= 0) ? raw.regs[m->idx_pm10]  / m->scale : NAN;
+        float pm25  = (m->idx_pm25  >= 0) ? raw.regs[m->idx_pm25]  / m->scale : NAN;
+        float sound = (m->idx_sound >= 0) ? (float)raw.regs[m->idx_sound]     : NAN;
+        char ts[8], hs[8], p10s[8], p25s[8], ss[8];
+        if (isnan(temp))  snprintf(ts,   sizeof(ts),   "null"); else snprintf(ts,   sizeof(ts),   "%.1f", temp);
+        if (isnan(hum))   snprintf(hs,   sizeof(hs),   "null"); else snprintf(hs,   sizeof(hs),   "%.1f", hum);
+        if (isnan(pm10))  snprintf(p10s, sizeof(p10s), "null"); else snprintf(p10s, sizeof(p10s), "%.1f", pm10);
+        if (isnan(pm25))  snprintf(p25s, sizeof(p25s), "null"); else snprintf(p25s, sizeof(p25s), "%.1f", pm25);
+        if (isnan(sound)) snprintf(ss,   sizeof(ss),   "null"); else snprintf(ss,   sizeof(ss),   "%.1f", sound);
+        snprintf(json, sizeof(json),
+            "{\"ok\":true,\"model\":\"%s\",\"slave\":%d,\"regs\":%s,"
+            "\"temp\":%s,\"hum\":%s,\"pm10\":%s,\"pm25\":%s,\"sound\":%s}",
+            m->name, cfg.slave_id, regs_str, ts, hs, p10s, p25s, ss);
+    }
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, json);
+}
+
+static esp_err_t get_sensor_info_handler(httpd_req_t *req)
+{
+    sensor_config_t cfg = sensor_config_get();
+    char json[64];
+    snprintf(json, sizeof(json), "{\"model\":%d,\"slave\":%d}",
+             cfg.model_idx, cfg.slave_id);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, json);
+}
+
+static esp_err_t post_sensor_cfg_handler(httpd_req_t *req)
+{
+    char body[64] = {};
+    int len = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (len <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty body");
+        return ESP_FAIL;
+    }
+    body[len] = '\0';
+
+    uint8_t model = 0, slave = 1;
+    char *p = strstr(body, "model=");
+    if (p) model = (uint8_t)atoi(p + 6);
+    p = strstr(body, "slave=");
+    if (p) slave = (uint8_t)atoi(p + 6);
+
+    sensor_config_set(model, slave);
+    httpd_resp_sendstr(req, "Sensor config saved!");
     return ESP_OK;
 }
 
@@ -416,19 +541,25 @@ void eth_upload_start(lv_obj_t *qr_obj, lv_obj_t *ip_label)
     httpd_handle_t server = NULL;
     httpd_config_t http_cfg = HTTPD_DEFAULT_CONFIG();
     http_cfg.stack_size       = 8192;
-    http_cfg.max_uri_handlers = 5;
+    http_cfg.max_uri_handlers = 8;
 
     if (httpd_start(&server, &http_cfg) != ESP_OK) {
         ESP_LOGE(TAG, "HTTP server start failed");
         return;
     }
 
-    httpd_uri_t uri_root      = { "/",          HTTP_GET,  get_root_handler,        NULL };
-    httpd_uri_t uri_upload    = { "/upload",    HTTP_POST, post_upload_handler,     NULL };
-    httpd_uri_t uri_upload_hd = { "/upload_hd", HTTP_POST, post_upload_hd_handler,  NULL };
+    httpd_uri_t uri_root         = { "/",             HTTP_GET,  get_root_handler,          NULL };
+    httpd_uri_t uri_upload       = { "/upload",       HTTP_POST, post_upload_handler,       NULL };
+    httpd_uri_t uri_upload_hd    = { "/upload_hd",    HTTP_POST, post_upload_hd_handler,    NULL };
+    httpd_uri_t uri_sensor_info  = { "/sensor_info",  HTTP_GET,  get_sensor_info_handler,   NULL };
+    httpd_uri_t uri_sensor_cfg   = { "/sensor_cfg",   HTTP_POST, post_sensor_cfg_handler,   NULL };
+    httpd_uri_t uri_sensor_test  = { "/sensor_test",  HTTP_GET,  get_sensor_test_handler,   NULL };
     httpd_register_uri_handler(server, &uri_root);
     httpd_register_uri_handler(server, &uri_upload);
     httpd_register_uri_handler(server, &uri_upload_hd);
+    httpd_register_uri_handler(server, &uri_sensor_info);
+    httpd_register_uri_handler(server, &uri_sensor_cfg);
+    httpd_register_uri_handler(server, &uri_sensor_test);
 
     ESP_LOGI(TAG, "HTTP server ready — waiting for upload");
 

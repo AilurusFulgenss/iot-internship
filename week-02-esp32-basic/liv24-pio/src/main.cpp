@@ -20,7 +20,9 @@
 #include "wifi_mqtt.h"
 #include "history.h"
 #include "ui_alert.h"
+#include "sensor_config.h"
 #include "cJSON.h"
+#include <math.h>
 
 static const char *TAG = "LIV24";
 
@@ -35,7 +37,6 @@ static const char *TAG = "LIV24";
 #define RS485_RXD      GPIO_NUM_48
 #define RS485_UART     UART_NUM_1
 #define MODBUS_BAUD    9600
-#define MODBUS_SLAVE   0x01
 #define MODBUS_TIMEOUT pdMS_TO_TICKS(300)
 
 static const gpio_num_t RELAY_GPIO[2] = {RELAY1_GPIO, RELAY2_GPIO};
@@ -352,12 +353,12 @@ static void rs485_init(void)
 // REG MAP (SN-300BYH-M, all /10 except sound):
 // 0x0000=Humidity*0.1%  0x0001=Temp*0.1C
 // 0x0003=PM10*0.1ug/m3  0x0004=PM2.5*0.1ug/m3  0x0005=Sound dB
-static bool modbus_read(uint16_t start_reg, uint8_t count, uint16_t *out)
+static bool modbus_read(uint8_t slave_id, uint16_t start_reg, uint8_t count, uint16_t *out)
 {
     if (count == 0 || count > 30) return false;
 
     uint8_t req[8];
-    req[0] = MODBUS_SLAVE;
+    req[0] = slave_id;
     req[1] = 0x03;
     req[2] = start_reg >> 8;
     req[3] = start_reg & 0xFF;
@@ -385,16 +386,20 @@ static bool modbus_read(uint16_t start_reg, uint8_t count, uint16_t *out)
 
 static void sensor_read_task(void *arg)
 {
-    uint16_t regs[6];
+    uint16_t regs[32];
     char buf[16];
 
     while (1) {
-        if (modbus_read(0x0000, 6, regs)) {
-            float hum   = regs[0] / 10.0f;
-            float temp  = regs[1] / 10.0f;
-            float pm10  = regs[3] / 10.0f;
-            float pm25  = regs[4] / 10.0f;
-            uint16_t snd = regs[5];
+        sensor_config_t       cfg = sensor_config_get();
+        const sensor_model_t *m   = &SENSOR_MODELS[cfg.model_idx];
+
+        if (modbus_read(cfg.slave_id, m->reg_start, m->reg_count, regs)) {
+            sensor_store_raw(regs, m->reg_count);
+            float temp = (m->idx_temp  >= 0) ? regs[m->idx_temp]  / m->scale : NAN;
+            float hum  = (m->idx_hum   >= 0) ? regs[m->idx_hum]   / m->scale : NAN;
+            float pm10 = (m->idx_pm10  >= 0) ? regs[m->idx_pm10]  / m->scale : NAN;
+            float pm25 = (m->idx_pm25  >= 0) ? regs[m->idx_pm25]  / m->scale : NAN;
+            uint16_t snd = (m->idx_sound >= 0) ? regs[m->idx_sound] : 0;
 
             ESP_LOGI(TAG, "T=%.1fC H=%.1f%% Sound=%ddB PM2.5=%.1f PM10=%.1f",
                      temp, hum, snd, pm25, pm10);
@@ -454,7 +459,7 @@ static void touch_nav_init(void)
     {
         lv_obj_t *btn = lv_btn_create(scr_user);
         lv_obj_set_size(btn, 76, 40);
-        lv_obj_align(btn, LV_ALIGN_BOTTOM_LEFT, 8, -8);
+        lv_obj_align(btn, LV_ALIGN_BOTTOM_LEFT, 32, -8);
         lv_obj_set_style_bg_color(btn, lv_color_hex(0x0D0D1A), 0);
         lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(btn, 0, 0);
@@ -471,7 +476,7 @@ static void touch_nav_init(void)
     {
         lv_obj_t *btn = lv_btn_create(scr_user);
         lv_obj_set_size(btn, 76, 40);
-        lv_obj_align(btn, LV_ALIGN_BOTTOM_LEFT, 92, -8);
+        lv_obj_align(btn, LV_ALIGN_BOTTOM_LEFT, 116, -8);
         lv_obj_set_style_bg_color(btn, lv_color_hex(0x0D0D1A), 0);
         lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(btn, 0, 0);
@@ -615,6 +620,7 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
+    sensor_config_init();
     calib_init();
     rs485_init();
 
