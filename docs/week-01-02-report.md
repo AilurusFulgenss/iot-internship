@@ -18,7 +18,18 @@
 
 1. **ระบบ UI บนจอ ESP32-P4** — สร้าง 3 หน้าหลักด้วย LVGL 9 ได้แก่ Air Quality (แสดงค่า sensor แบบ real-time พร้อม AQI color), PM History (กราฟค่าเฉลี่ยรายชั่วโมง 5 ค่า ย้อนหลัง 24 ชั่วโมง และ 7 วัน), และ Relay Control (ปุ่ม toggle relay 2 ตัว) สลับหน้าด้วย touch navigation
 
-2. **อ่านค่า sensor จาก SN-300BYH-M** — ต่อผ่าน RS485 Modbus RTU (GPIO47 TX / GPIO48 RX, baud 9600) อ่านค่า Temperature, Humidity, PM2.5, PM10, Sound Level ทุก 2 วินาที และแสดงผลบนหน้าจอแบบ real-time
+2. **อ่านค่า sensor จาก SN-300BYH-M ผ่าน RS485 Modbus RTU** — กระบวนการรับค่าและแปลงเป็นตัวเลขมีขั้นตอนดังนี้
+   - **การเชื่อมต่อ:** ESP32-P4 ต่อกับ sensor ผ่านสาย RS485 (A+/B-) โดยใช้ GPIO47 (TX) และ GPIO48 (RX) กำหนด baud rate 9600, 8N1, Half-Duplex
+   - **การส่งคำสั่ง (Request):** ESP ส่ง Modbus RTU request ทุก 2 วินาที ขนาด 8 bytes เพื่อขอให้ sensor ส่งค่ากลับมา เช่น `01 03 00 00 00 06 C5 C8` หมายความว่า: Slave ID=01, Function=03 (Read Holding Registers), เริ่มที่ address 0x0000, อ่าน 6 registers, ตามด้วย CRC16 2 bytes
+   - **ข้อมูลที่วิ่งมาบนสาย (Raw Bytes):** sensor ตอบกลับมาเป็น byte stream เช่น `01 03 0C 01 0C 00 F8 00 00 00 00 01 26 00 00 XX XX` ซึ่งเป็น binary ดิบยังอ่านไม่รู้เรื่อง
+   - **การ verify ด้วย CRC16:** ESP ตรวจสอบ 2 bytes สุดท้ายที่เป็น CRC16 checksum ก่อน ถ้าไม่ตรงหมายความว่าข้อมูลเสียหายระหว่างส่ง ทิ้งค่านั้นไปและรอรอบถัดไป
+   - **การ decode register เป็นตัวเลข:** หลังผ่าน CRC แล้ว แต่ละ 2 bytes รวมกันเป็น 1 register (16-bit integer) แล้วนำไปแปลงตาม register map ของ SN-300BYH-M
+     - Register 0x0000 → Humidity: หารด้วย 10 → `0x00F8 = 248 ÷ 10 = 24.8%`
+     - Register 0x0001 → Temperature: หารด้วย 10 → `0x010C = 268 ÷ 10 = 26.8°C`
+     - Register 0x0003 → PM10: หารด้วย 10 → `µg/m³`
+     - Register 0x0004 → PM2.5: หารด้วย 10 → `µg/m³`
+     - Register 0x0005 → Sound: ค่าดิบไม่ต้องหาร → `dB`
+   - **แสดงผลบนหน้าจอ:** ค่าที่ได้จะ update label บน LVGL display ทุก 2 วินาที
 
 3. **เชื่อม MQTT กับ Home Assistant** — ESP ส่งข้อมูล sensor ขึ้น HA ทุก 2 วินาที ผ่าน Ethernet (static IP 192.168.1.200) โดย broker คือ Mosquitto ที่รันบน Raspberry Pi (192.168.1.111) สร้าง dashboard บน HA แสดงค่า sensor ครบทุกตัว
 
