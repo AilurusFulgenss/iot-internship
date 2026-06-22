@@ -276,3 +276,18 @@ void wifi_mqtt_publish_sensors(float temp, float hum, int sound,
              temp, hum, sound, pm25, pm10);
     esp_mqtt_client_publish(s_mqtt, "liv24/sensors", payload, 0, 0, 0);
 }
+
+void wifi_mqtt_publish_ec(float ec)
+{
+    if (!s_mqtt_ready) return;
+    char payload[48];
+    snprintf(payload, sizeof(payload), "{\"ec\":%.1f}", ec);
+    esp_mqtt_client_publish(s_mqtt, "liv24/sensors", payload, 0, 0, 0);
+}
+
+void wifi_mqtt_publish_leak(bool alarm)
+{
+    if (!s_mqtt_ready) return;
+    esp_mqtt_client_publish(s_mqtt, "liv24/sensors",
+        alarm ? "{\"leak\":true}" : "{\"leak\":false}", 0, 0, 0);
+}

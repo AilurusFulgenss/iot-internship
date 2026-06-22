@@ -353,13 +353,13 @@ static void rs485_init(void)
 // REG MAP (SN-300BYH-M, all /10 except sound):
 // 0x0000=Humidity*0.1%  0x0001=Temp*0.1C
 // 0x0003=PM10*0.1ug/m3  0x0004=PM2.5*0.1ug/m3  0x0005=Sound dB
-static bool modbus_read(uint8_t slave_id, uint16_t start_reg, uint8_t count, uint16_t *out)
+static bool modbus_read(uint8_t slave_id, uint8_t fc, uint16_t start_reg, uint8_t count, uint16_t *out)
 {
     if (count == 0 || count > 30) return false;
 
     uint8_t req[8];
     req[0] = slave_id;
-    req[1] = 0x03;
+    req[1] = fc;
     req[2] = start_reg >> 8;
     req[3] = start_reg & 0xFF;
     req[4] = 0x00;
@@ -393,33 +393,64 @@ static void sensor_read_task(void *arg)
         sensor_config_t       cfg = sensor_config_get();
         const sensor_model_t *m   = &SENSOR_MODELS[cfg.model_idx];
 
-        if (modbus_read(cfg.slave_id, m->reg_start, m->reg_count, regs)) {
+        if (modbus_read(cfg.slave_id, m->fc, m->reg_start, m->reg_count, regs)) {
             sensor_store_raw(regs, m->reg_count);
-            float temp = (m->idx_temp  >= 0) ? regs[m->idx_temp]  / m->scale : NAN;
-            float hum  = (m->idx_hum   >= 0) ? regs[m->idx_hum]   / m->scale : NAN;
-            float pm10 = (m->idx_pm10  >= 0) ? regs[m->idx_pm10]  / m->scale : NAN;
-            float pm25 = (m->idx_pm25  >= 0) ? regs[m->idx_pm25]  / m->scale : NAN;
-            uint16_t snd = (m->idx_sound >= 0) ? regs[m->idx_sound] : 0;
 
-            ESP_LOGI(TAG, "T=%.1fC H=%.1f%% Sound=%ddB PM2.5=%.1f PM10=%.1f",
-                     temp, hum, snd, pm25, pm10);
+            switch (m->type) {
+            case SENSOR_TYPE_PM: {
+                float temp = (m->idx_temp  >= 0) ? regs[m->idx_temp]  / m->scale : NAN;
+                float hum  = (m->idx_hum   >= 0) ? regs[m->idx_hum]   / m->scale : NAN;
+                float pm10 = (m->idx_pm10  >= 0) ? regs[m->idx_pm10]  / m->scale : NAN;
+                float pm25 = (m->idx_pm25  >= 0) ? regs[m->idx_pm25]  / m->scale : NAN;
+                uint16_t snd = (m->idx_sound >= 0) ? regs[m->idx_sound] : 0;
 
-            float t_cal   = calib_apply(temp,        &g_calib.temp);
-            float h_cal   = calib_apply(hum,         &g_calib.hum);
-            float p25_cal = calib_apply(pm25,        &g_calib.pm25);
-            float p10_cal = calib_apply(pm10,        &g_calib.pm10);
-            float s_cal   = calib_apply((float)snd,  &g_calib.sound);
+                ESP_LOGI(TAG, "T=%.1fC H=%.1f%% Sound=%ddB PM2.5=%.1f PM10=%.1f",
+                         temp, hum, snd, pm25, pm10);
 
-            bsp_display_lock(0);
-            ui_alert_set_mqtt_status(wifi_mqtt_is_connected());
-            ui_user_update(t_cal, h_cal, p25_cal, p10_cal, (int)s_cal);
-            ui_pm_update(t_cal, h_cal, p25_cal, p10_cal, (float)s_cal);
-            ui_dev_update(temp, hum, (float)snd, pm25, pm10);
-            ui_exec_update(t_cal, h_cal, p25_cal, p10_cal);
-            ui_alert_check(t_cal, h_cal, p25_cal, p10_cal, s_cal);
-            bsp_display_unlock();
+                float t_cal   = calib_apply(temp,       &g_calib.temp);
+                float h_cal   = calib_apply(hum,        &g_calib.hum);
+                float p25_cal = calib_apply(pm25,       &g_calib.pm25);
+                float p10_cal = calib_apply(pm10,       &g_calib.pm10);
+                float s_cal   = calib_apply((float)snd, &g_calib.sound);
 
-            wifi_mqtt_publish_sensors(t_cal, h_cal, (int)s_cal, p25_cal, p10_cal);
+                bsp_display_lock(0);
+                ui_alert_set_mqtt_status(wifi_mqtt_is_connected());
+                ui_user_update(t_cal, h_cal, p25_cal, p10_cal, (int)s_cal);
+                ui_pm_update(t_cal, h_cal, p25_cal, p10_cal, (float)s_cal);
+                ui_dev_update(temp, hum, (float)snd, pm25, pm10);
+                ui_exec_update(t_cal, h_cal, p25_cal, p10_cal);
+                ui_alert_check(t_cal, h_cal, p25_cal, p10_cal, s_cal);
+                bsp_display_unlock();
+
+                wifi_mqtt_publish_sensors(t_cal, h_cal, (int)s_cal, p25_cal, p10_cal);
+                break;
+            }
+            case SENSOR_TYPE_EC: {
+                float ec = (m->idx_ec >= 0) ? regs[m->idx_ec] / m->scale : NAN;
+                ESP_LOGI(TAG, "EC=%.1f uS/cm", ec);
+
+                bsp_display_lock(0);
+                ui_alert_set_mqtt_status(wifi_mqtt_is_connected());
+                ui_user_update_ec(ec);
+                bsp_display_unlock();
+
+                wifi_mqtt_publish_ec(ec);
+                break;
+            }
+            case SENSOR_TYPE_LEAK: {
+                bool alarm = (m->idx_leak >= 0) ? (regs[m->idx_leak] == 0x0002) : false;
+                ESP_LOGI(TAG, "Leak=%s (raw=0x%04X)", alarm ? "ALARM" : "NORMAL",
+                         m->idx_leak >= 0 ? regs[m->idx_leak] : 0);
+
+                bsp_display_lock(0);
+                ui_alert_set_mqtt_status(wifi_mqtt_is_connected());
+                ui_user_update_leak(alarm);
+                bsp_display_unlock();
+
+                wifi_mqtt_publish_leak(alarm);
+                break;
+            }
+            }
         } else {
             ESP_LOGW(TAG, "sensor: no response");
         }

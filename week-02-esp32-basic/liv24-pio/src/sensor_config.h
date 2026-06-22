@@ -7,23 +7,30 @@ extern "C" {
 #endif
 
 // ── Sensor model definition ───────────────────────────────────────────────────
-// Describes a RS485 sensor: which Modbus registers to read and how to parse them.
-// idx_* = position in the register array (-1 means that value is not available)
-// scale = divide raw register value by this to get real unit (e.g. 10 → ÷10)
+
+typedef enum {
+    SENSOR_TYPE_PM,    // temp / hum / PM2.5 / PM10 / sound  (FC03)
+    SENSOR_TYPE_EC,    // EC/TDS conductivity                 (FC03)
+    SENSOR_TYPE_LEAK,  // liquid leak status                  (FC04)
+} sensor_type_t;
 
 typedef struct {
-    const char *name;
-    uint16_t    reg_start;
-    uint8_t     reg_count;
-    int8_t      idx_temp;
-    int8_t      idx_hum;
-    int8_t      idx_pm10;
-    int8_t      idx_pm25;
-    int8_t      idx_sound;
-    float       scale;
+    const char    *name;
+    sensor_type_t  type;
+    uint16_t       reg_start;
+    uint8_t        reg_count;
+    uint8_t        fc;        // Modbus function code (0x03 or 0x04)
+    int8_t         idx_temp;
+    int8_t         idx_hum;
+    int8_t         idx_pm10;
+    int8_t         idx_pm25;
+    int8_t         idx_sound;
+    int8_t         idx_ec;    // EC/TDS register index (-1 if N/A)
+    int8_t         idx_leak;  // leak status register index (-1 if N/A)
+    float          scale;
 } sensor_model_t;
 
-#define SENSOR_MODEL_COUNT 2
+#define SENSOR_MODEL_COUNT 3
 extern const sensor_model_t SENSOR_MODELS[SENSOR_MODEL_COUNT];
 
 // ── Saved config (persisted to NVS flash) ────────────────────────────────────

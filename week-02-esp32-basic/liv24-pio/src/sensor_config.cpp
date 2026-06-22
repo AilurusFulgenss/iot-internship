@@ -12,26 +12,44 @@ const sensor_model_t SENSOR_MODELS[SENSOR_MODEL_COUNT] = {
     {
         // Model 0: SN-300BYH-M — temp / hum / PM2.5 / PM10 / sound
         // Registers: [0]=Hum*10  [1]=Temp*10  [3]=PM10*10  [4]=PM2.5*10  [5]=Sound
-        "SN-300BYH-M",
-        0x0000, 6,
+        "SN-300BYH-M", SENSOR_TYPE_PM,
+        0x0000, 6, 0x03,
         /*idx_temp*/  1,
         /*idx_hum*/   0,
         /*idx_pm10*/  3,
         /*idx_pm25*/  4,
         /*idx_sound*/ 5,
-        /*scale*/     10.0f,
+        /*idx_ec*/   -1,
+        /*idx_leak*/ -1,
+        /*scale*/    10.0f,
     },
     {
-        // Model 1: placeholder — spec arrives Monday
-        // Fill in reg_start / reg_count / idx_* once datasheet is available
-        "Model-2 (TBD)",
-        0x0000, 4,
-        /*idx_temp*/   1,
-        /*idx_hum*/    0,
+        // Model 1: CWT BL EC/TDS transmitter, 0-44000 uS/cm
+        // FC03, reg 0x0001 = EC/TDS value, scale=1 (raw = uS/cm for 44000 range)
+        "CWT-EC/TDS", SENSOR_TYPE_EC,
+        0x0001, 1, 0x03,
+        /*idx_temp*/  -1,
+        /*idx_hum*/   -1,
         /*idx_pm10*/  -1,
         /*idx_pm25*/  -1,
         /*idx_sound*/ -1,
-        /*scale*/     10.0f,
+        /*idx_ec*/     0,
+        /*idx_leak*/  -1,
+        /*scale*/      1.0f,
+    },
+    {
+        // Model 2: Leaksense LD100 leak detector
+        // FC04, reg 0x0001 = status: 0x0000=normal, 0x0002=alarm
+        "LD100-LEAK", SENSOR_TYPE_LEAK,
+        0x0001, 1, 0x04,
+        /*idx_temp*/  -1,
+        /*idx_hum*/   -1,
+        /*idx_pm10*/  -1,
+        /*idx_pm25*/  -1,
+        /*idx_sound*/ -1,
+        /*idx_ec*/    -1,
+        /*idx_leak*/   0,
+        /*scale*/      1.0f,
     },
 };
 

@@ -18,6 +18,8 @@ bool wifi_mqtt_is_connected(void);
 
 void wifi_mqtt_publish_sensors(float temp, float hum, int sound,
                                float pm25, float pm10);
+void wifi_mqtt_publish_ec(float ec);
+void wifi_mqtt_publish_leak(bool alarm);
 void wifi_mqtt_publish_relay_state(int idx, bool on);
 
 #ifdef __cplusplus

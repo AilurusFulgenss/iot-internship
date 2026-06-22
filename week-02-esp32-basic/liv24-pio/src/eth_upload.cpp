@@ -151,8 +151,9 @@ static const char HTML[] =
 "<p>Choose which sensor is plugged into RS485</p>"
 "<select id='sm' style='width:100%;padding:12px;background:#111;color:#eee;"
 "border:1px solid #334455;border-radius:8px;font-size:15px;margin:8px 0'>"
-"<option value='0'>SN-300BYH-M</option>"
-"<option value='1'>Model-2 (TBD)</option>"
+"<option value='0'>SN-300BYH-M (PM/Temp/Hum/Sound)</option>"
+"<option value='1'>CWT-EC/TDS (0-44000 uS/cm)</option>"
+"<option value='2'>LD100 Leak Detector</option>"
 "</select>"
 "<div style='display:flex;align-items:center;gap:12px;margin:8px 0'>"
 "<span style='color:#556677;font-size:14px;white-space:nowrap'>Slave ID</span>"
@@ -191,11 +192,19 @@ static const char HTML[] =
 "  fetch('/sensor_test').then(function(r){return r.json();}).then(function(d){"
 "    tb.disabled=false;"
 "    if(!d.ok){tst.innerHTML='<span style=\"color:#ff4444\">✗ '+d.error+'</span>';return;}"
-"    tst.innerHTML='<span style=\"color:#00cc44\">✓ Sensor responded</span><br>'"
+"    var hdr='<span style=\"color:#00cc44\">✓ Sensor responded</span><br>'"
 "      +'<span style=\"color:#778899\">'+d.model+' | Slave: '+d.slave+'</span><br>'"
-"      +'<span style=\"color:#556677\">Raw: ['+d.regs.join(', ')+']</span><br>'"
-"      +'Temp: <b>'+d.temp+'&deg;C</b>  Hum: <b>'+d.hum+'%</b><br>'"
-"      +'PM2.5: <b>'+d.pm25+'</b>  PM10: <b>'+d.pm10+'</b>  Sound: <b>'+d.sound+' dB</b>';"
+"      +'<span style=\"color:#556677\">Raw: ['+d.regs.join(', ')+']</span><br>';"
+"    if(d.ec!==undefined){"
+"      tst.innerHTML=hdr+'EC: <b>'+d.ec+' uS/cm</b>';"
+"    }else if(d.leak!==undefined){"
+"      var sc=d.leak?'color:#ff4444':'color:#00cc44';"
+"      tst.innerHTML=hdr+'Leak: <b style=\"'+sc+'\">'+d.status+'</b>';"
+"    }else{"
+"      tst.innerHTML=hdr"
+"        +'Temp: <b>'+d.temp+'&deg;C</b>  Hum: <b>'+d.hum+'%</b><br>'"
+"        +'PM2.5: <b>'+d.pm25+'</b>  PM10: <b>'+d.pm10+'</b>  Sound: <b>'+d.sound+' dB</b>';"
+"    }"
 "  }).catch(function(e){tb.disabled=false;tst.innerHTML='<span style=\"color:#ff4444\">Error: '+e+'</span>';});"
 "}"
 "</script>"
@@ -313,21 +322,42 @@ static esp_err_t get_sensor_test_handler(httpd_req_t *req)
             snprintf(tmp, sizeof(tmp), i < raw.count - 1 ? "%d," : "%d]", raw.regs[i]);
             strncat(regs_str, tmp, sizeof(regs_str) - strlen(regs_str) - 1);
         }
-        float temp  = (m->idx_temp  >= 0) ? raw.regs[m->idx_temp]  / m->scale : NAN;
-        float hum   = (m->idx_hum   >= 0) ? raw.regs[m->idx_hum]   / m->scale : NAN;
-        float pm10  = (m->idx_pm10  >= 0) ? raw.regs[m->idx_pm10]  / m->scale : NAN;
-        float pm25  = (m->idx_pm25  >= 0) ? raw.regs[m->idx_pm25]  / m->scale : NAN;
-        float sound = (m->idx_sound >= 0) ? (float)raw.regs[m->idx_sound]     : NAN;
-        char ts[8], hs[8], p10s[8], p25s[8], ss[8];
-        if (isnan(temp))  snprintf(ts,   sizeof(ts),   "null"); else snprintf(ts,   sizeof(ts),   "%.1f", temp);
-        if (isnan(hum))   snprintf(hs,   sizeof(hs),   "null"); else snprintf(hs,   sizeof(hs),   "%.1f", hum);
-        if (isnan(pm10))  snprintf(p10s, sizeof(p10s), "null"); else snprintf(p10s, sizeof(p10s), "%.1f", pm10);
-        if (isnan(pm25))  snprintf(p25s, sizeof(p25s), "null"); else snprintf(p25s, sizeof(p25s), "%.1f", pm25);
-        if (isnan(sound)) snprintf(ss,   sizeof(ss),   "null"); else snprintf(ss,   sizeof(ss),   "%.1f", sound);
-        snprintf(json, sizeof(json),
-            "{\"ok\":true,\"model\":\"%s\",\"slave\":%d,\"regs\":%s,"
-            "\"temp\":%s,\"hum\":%s,\"pm10\":%s,\"pm25\":%s,\"sound\":%s}",
-            m->name, cfg.slave_id, regs_str, ts, hs, p10s, p25s, ss);
+
+        if (m->type == SENSOR_TYPE_EC) {
+            float ec = (m->idx_ec >= 0) ? raw.regs[m->idx_ec] / m->scale : NAN;
+            char ecs[12];
+            if (isnan(ec)) snprintf(ecs, sizeof(ecs), "null");
+            else           snprintf(ecs, sizeof(ecs), "%.1f", ec);
+            snprintf(json, sizeof(json),
+                "{\"ok\":true,\"model\":\"%s\",\"slave\":%d,\"regs\":%s,\"ec\":%s}",
+                m->name, cfg.slave_id, regs_str, ecs);
+
+        } else if (m->type == SENSOR_TYPE_LEAK) {
+            bool alarm = (m->idx_leak >= 0) ? (raw.regs[m->idx_leak] == 0x0002) : false;
+            snprintf(json, sizeof(json),
+                "{\"ok\":true,\"model\":\"%s\",\"slave\":%d,\"regs\":%s,"
+                "\"leak\":%s,\"status\":\"%s\"}",
+                m->name, cfg.slave_id, regs_str,
+                alarm ? "true" : "false",
+                alarm ? "ALARM" : "NORMAL");
+
+        } else {
+            float temp  = (m->idx_temp  >= 0) ? raw.regs[m->idx_temp]  / m->scale : NAN;
+            float hum   = (m->idx_hum   >= 0) ? raw.regs[m->idx_hum]   / m->scale : NAN;
+            float pm10  = (m->idx_pm10  >= 0) ? raw.regs[m->idx_pm10]  / m->scale : NAN;
+            float pm25  = (m->idx_pm25  >= 0) ? raw.regs[m->idx_pm25]  / m->scale : NAN;
+            float sound = (m->idx_sound >= 0) ? (float)raw.regs[m->idx_sound]     : NAN;
+            char ts[8], hs[8], p10s[8], p25s[8], ss[8];
+            if (isnan(temp))  snprintf(ts,   sizeof(ts),   "null"); else snprintf(ts,   sizeof(ts),   "%.1f", temp);
+            if (isnan(hum))   snprintf(hs,   sizeof(hs),   "null"); else snprintf(hs,   sizeof(hs),   "%.1f", hum);
+            if (isnan(pm10))  snprintf(p10s, sizeof(p10s), "null"); else snprintf(p10s, sizeof(p10s), "%.1f", pm10);
+            if (isnan(pm25))  snprintf(p25s, sizeof(p25s), "null"); else snprintf(p25s, sizeof(p25s), "%.1f", pm25);
+            if (isnan(sound)) snprintf(ss,   sizeof(ss),   "null"); else snprintf(ss,   sizeof(ss),   "%.1f", sound);
+            snprintf(json, sizeof(json),
+                "{\"ok\":true,\"model\":\"%s\",\"slave\":%d,\"regs\":%s,"
+                "\"temp\":%s,\"hum\":%s,\"pm10\":%s,\"pm25\":%s,\"sound\":%s}",
+                m->name, cfg.slave_id, regs_str, ts, hs, p10s, p25s, ss);
+        }
     }
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, json);

@@ -8,3 +8,5 @@ void ui_user_create(void);
 
 // Call from sensor task (inside bsp_display_lock) on every sensor read
 void ui_user_update(float temp, float hum, float pm25, float pm10, int sound);
+void ui_user_update_ec(float ec);
+void ui_user_update_leak(bool alarm);

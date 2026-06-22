@@ -31,6 +31,11 @@ static lv_obj_t *lbl_pm25_st    = NULL;
 static lv_obj_t *lbl_pm10_st    = NULL;
 static lv_obj_t *lbl_pm25_title = NULL;
 static lv_obj_t *lbl_pm10_title = NULL;
+// Extra label handles for EC/LEAK display modes
+static lv_obj_t *lbl_temp_title  = NULL;
+static lv_obj_t *lbl_temp_unit   = NULL;
+static lv_obj_t *lbl_sound_title = NULL;
+static lv_obj_t *lbl_sound_unit  = NULL;
 
 // ── AQI helpers ──────────────────────────────────────────────────────────────
 
@@ -139,6 +144,7 @@ typedef struct {
     lv_obj_t *lbl_val;
     lv_obj_t *lbl_status;   // NULL unless has_status=true
     lv_obj_t *lbl_title;
+    lv_obj_t *lbl_unit;
 } card_out_t;
 
 static void make_card(lv_obj_t *parent, int w, int h,
@@ -190,6 +196,7 @@ static void make_card(lv_obj_t *parent, int w, int h,
     out->card      = c;
     out->lbl_val   = lbl_v;
     out->lbl_title = lbl_t;
+    out->lbl_unit  = lbl_u;
 }
 
 // ── ui_user_create ───────────────────────────────────────────────────────────
@@ -283,7 +290,9 @@ void ui_user_create(void)
     // ── Card 1: Temperature ───────────────────────────────
     card_out_t c = {};
     make_card(cont, CW, 160, "TEMPERATURE", "\xc2\xb0" "C", false, &c);
-    lbl_temp = c.lbl_val;
+    lbl_temp       = c.lbl_val;
+    lbl_temp_title = c.lbl_title;
+    lbl_temp_unit  = c.lbl_unit;
 
     // ── Card 2: Humidity ──────────────────────────────────
     make_card(cont, CW, 160, "HUMIDITY", "%", false, &c);
@@ -316,6 +325,7 @@ void ui_user_create(void)
     lv_obj_clear_flag(card_snd, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *lbl_snd_t = lv_label_create(card_snd);
+    lbl_sound_title = lbl_snd_t;
     lv_label_set_text(lbl_snd_t, "SOUND LEVEL");
     lv_obj_set_style_text_color(lbl_snd_t, lv_color_hex(0x7788AA), 0);
     lv_obj_set_style_text_font(lbl_snd_t, &lv_font_montserrat_14, 0);
@@ -328,6 +338,7 @@ void ui_user_create(void)
     lv_obj_align(lbl_sound, LV_ALIGN_RIGHT_MID, -52, 0);
 
     lv_obj_t *lbl_snd_u = lv_label_create(card_snd);
+    lbl_sound_unit = lbl_snd_u;
     lv_label_set_text(lbl_snd_u, "dB");
     lv_obj_set_style_text_color(lbl_snd_u, lv_color_hex(0x4D5F78), 0);
     lv_obj_set_style_text_font(lbl_snd_u, &lv_font_montserrat_24, 0);
@@ -362,4 +373,49 @@ void ui_user_update(float temp, float hum, float pm25, float pm10, int sound)
     if (lbl_sound) lv_label_set_text(lbl_sound, buf);
 
     apply_pm_colors();
+}
+
+// ── ui_user_update_ec — EC/TDS mode ─────────────────────────────────────────
+
+void ui_user_update_ec(float ec)
+{
+    if (!scr_user) return;
+    if (lbl_temp_title) lv_label_set_text(lbl_temp_title, "EC VALUE");
+    if (lbl_temp_unit)  lv_label_set_text(lbl_temp_unit,  "uS/cm");
+
+    char buf[16];
+    if (!isnan(ec)) {
+        snprintf(buf, sizeof(buf), "%.0f", ec);
+        if (lbl_temp) {
+            lv_label_set_text(lbl_temp, buf);
+            lv_obj_set_style_text_color(lbl_temp, lv_color_hex(0x00E5FF), 0);
+        }
+    } else {
+        if (lbl_temp) lv_label_set_text(lbl_temp, "--");
+    }
+
+    if (lbl_hum)   lv_label_set_text(lbl_hum,   "--");
+    if (lbl_pm25)  lv_label_set_text(lbl_pm25,  "--");
+    if (lbl_pm10)  lv_label_set_text(lbl_pm10,  "--");
+    if (lbl_sound) lv_label_set_text(lbl_sound, "--");
+}
+
+// ── ui_user_update_leak — Leak detector mode ────────────────────────────────
+
+void ui_user_update_leak(bool alarm)
+{
+    if (!scr_user) return;
+    if (lbl_sound_title) lv_label_set_text(lbl_sound_title, "LEAK STATUS");
+    if (lbl_sound_unit)  lv_label_set_text(lbl_sound_unit,  "");
+
+    if (lbl_sound) {
+        lv_label_set_text(lbl_sound, alarm ? "ALARM" : "NORMAL");
+        lv_obj_set_style_text_color(lbl_sound,
+            alarm ? lv_color_hex(0xFF2222u) : lv_color_hex(0x00CC44u), 0);
+    }
+
+    if (lbl_temp)  lv_label_set_text(lbl_temp,  "--");
+    if (lbl_hum)   lv_label_set_text(lbl_hum,   "--");
+    if (lbl_pm25)  lv_label_set_text(lbl_pm25,  "--");
+    if (lbl_pm10)  lv_label_set_text(lbl_pm10,  "--");
 }
