@@ -167,23 +167,23 @@ static lv_obj_t *create_eth_setup_screen(lv_obj_t **out_qr, lv_obj_t **out_ip_la
     make_label(scr_eth_setup, "Plug in Ethernet\nthen scan to upload logo",
                0x334455, &lv_font_montserrat_14, LV_ALIGN_BOTTOM_MID, -180, -20);
 
-    // ── Right column: LINE add friend ────────────────────────────────
-    make_label(scr_eth_setup, "ADD LINE BOT",
-               0x2E7D32, &lv_font_montserrat_14, LV_ALIGN_TOP_MID, 180, 95);
+    // ── Right column: Telegram add bot ───────────────────────────────
+    make_label(scr_eth_setup, "ADD TELEGRAM BOT",
+               0x1565C0, &lv_font_montserrat_14, LV_ALIGN_TOP_MID, 180, 95);
 
-    lv_obj_t *line_qr = lv_qrcode_create(scr_eth_setup);
-    lv_qrcode_set_size(line_qr, 200);
-    lv_qrcode_set_dark_color(line_qr, lv_color_hex(0x06C755));
-    lv_qrcode_set_light_color(line_qr, lv_color_hex(0x0A0A12));
-    lv_obj_align(line_qr, LV_ALIGN_CENTER, 170, -20);
-    const char *line_url = "https://line.me/R/ti/p/@552ukkqd";
-    lv_qrcode_update(line_qr, line_url, strlen(line_url));
+    lv_obj_t *tg_qr = lv_qrcode_create(scr_eth_setup);
+    lv_qrcode_set_size(tg_qr, 200);
+    lv_qrcode_set_dark_color(tg_qr, lv_color_hex(0x2CA5E0));
+    lv_qrcode_set_light_color(tg_qr, lv_color_hex(0x0A0A12));
+    lv_obj_align(tg_qr, LV_ALIGN_CENTER, 170, -20);
+    const char *tg_url = "https://t.me/liv24alert_bot";
+    lv_qrcode_update(tg_qr, tg_url, strlen(tg_url));
 
-    make_label(scr_eth_setup, "@552ukkqd",
-               0x06C755, &lv_font_montserrat_14, LV_ALIGN_CENTER, 170, 120);
+    make_label(scr_eth_setup, "@liv24alert_bot",
+               0x2CA5E0, &lv_font_montserrat_14, LV_ALIGN_CENTER, 170, 120);
 
-    make_label(scr_eth_setup, "Scan to receive alerts\nvia LINE",
-               0x1A3A1A, &lv_font_montserrat_14, LV_ALIGN_BOTTOM_MID, 180, -20);
+    make_label(scr_eth_setup, "Scan to receive alerts\nvia Telegram",
+               0x0D3B5E, &lv_font_montserrat_14, LV_ALIGN_BOTTOM_MID, 180, -20);
 
     return scr_eth_setup;
 }
@@ -605,6 +605,17 @@ static void on_test_alert(const char *json, int len)
         ui_alert_check(temp, hum, pm25, pm10, sound);
         bsp_display_unlock();
     }
+
+    // Auto-dismiss after 15 s — prevents retained broker messages from
+    // leaving a permanent banner when no PM sensor is connected to clear it.
+    xTaskCreate([](void *) {
+        vTaskDelay(pdMS_TO_TICKS(15000));
+        if (bsp_display_lock(0)) {
+            ui_alert_check(NAN, NAN, NAN, NAN, NAN);
+            bsp_display_unlock();
+        }
+        vTaskDelete(NULL);
+    }, "alert_clr", 2048, NULL, 2, NULL);
 }
 
 static void on_hist_24h(const char *d, int len)
