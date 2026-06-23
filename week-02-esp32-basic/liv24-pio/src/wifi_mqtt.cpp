@@ -22,6 +22,7 @@ static void (*s_logo_url_cb)(const char *)       = NULL;
 static void (*s_hist_24h_cb)(const char *, int)  = NULL;
 static void (*s_hist_7d_cb )(const char *, int)  = NULL;
 static void (*s_test_alert_cb)(const char *, int) = NULL;
+static void (*s_flora_cb)(const char *, int)      = NULL;
 static char s_broker_uri[128];
 
 // ── MQTT events ───────────────────────────────────────────────────────────────
@@ -41,6 +42,7 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
         esp_mqtt_client_subscribe(s_mqtt, "liv24/history/24h",  1);
         esp_mqtt_client_subscribe(s_mqtt, "liv24/history/7d",   1);
         esp_mqtt_client_subscribe(s_mqtt, "liv24/test/alert",   0);
+        esp_mqtt_client_subscribe(s_mqtt, "liv24/flora",        1);
         // broker delivers retained messages automatically on subscribe — no request needed
         break;
 
@@ -67,6 +69,10 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
             }
             if (strcmp(topic, "liv24/test/alert") == 0) {
                 if (s_test_alert_cb) s_test_alert_cb(ev->data, ev->data_len);
+                break;
+            }
+            if (strcmp(topic, "liv24/flora") == 0) {
+                if (s_flora_cb) s_flora_cb(ev->data, ev->data_len);
                 break;
             }
             if (strcmp(topic, "liv24/logo/url") == 0) {
@@ -253,6 +259,11 @@ void wifi_mqtt_set_test_alert_cb(void (*cb)(const char *json, int len))
     s_test_alert_cb = cb;
 }
 
+void wifi_mqtt_set_flora_cb(void (*cb)(const char *json, int len))
+{
+    s_flora_cb = cb;
+}
+
 bool wifi_mqtt_is_connected(void)
 {
     return s_mqtt_ready;
@@ -290,4 +301,20 @@ void wifi_mqtt_publish_leak(bool alarm)
     if (!s_mqtt_ready) return;
     esp_mqtt_client_publish(s_mqtt, "liv24/sensors",
         alarm ? "{\"leak\":true}" : "{\"leak\":false}", 0, 0, 0);
+}
+
+void wifi_mqtt_publish_th(float temp, float hum)
+{
+    if (!s_mqtt_ready) return;
+    char payload[64];
+    snprintf(payload, sizeof(payload), "{\"temp\":%.1f,\"hum\":%.1f}", temp, hum);
+    esp_mqtt_client_publish(s_mqtt, "liv24/sensors", payload, 0, 0, 0);
+}
+
+void wifi_mqtt_publish_orp(float orp, float temp)
+{
+    if (!s_mqtt_ready) return;
+    char payload[64];
+    snprintf(payload, sizeof(payload), "{\"orp\":%.1f,\"temp\":%.1f}", orp, temp);
+    esp_mqtt_client_publish(s_mqtt, "liv24/sensors", payload, 0, 0, 0);
 }

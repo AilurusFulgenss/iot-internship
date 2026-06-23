@@ -50,6 +50,7 @@ static lv_obj_t *cont_leak = NULL;
 // EC big card widgets
 static lv_obj_t *lbl_ec_big  = NULL;
 static lv_obj_t *lbl_tds_big = NULL;
+static lv_obj_t *lbl_ec_unit = NULL;
 
 // LEAK big card widgets
 static lv_obj_t *card_leak_big = NULL;
@@ -509,7 +510,7 @@ void ui_user_create(void)
         lv_obj_set_style_text_font(lbl_ec_big, &lv_font_montserrat_48, 0);
         lv_obj_align(lbl_ec_big, LV_ALIGN_CENTER, 0, -24);
 
-        lv_obj_t *lbl_ec_unit = lv_label_create(card_ec);
+        lbl_ec_unit = lv_label_create(card_ec);
         lv_label_set_text(lbl_ec_unit, "uS/cm");
         lv_obj_set_style_text_color(lbl_ec_unit, lv_color_hex(0x4D5F78), 0);
         lv_obj_set_style_text_font(lbl_ec_unit, &lv_font_montserrat_24, 0);
@@ -551,7 +552,11 @@ void ui_user_create(void)
     }
 
     // ── Default view = selected sensor model ──────────────
-    switch_view((int)cfg.model_idx);
+    // TH (model 3) → PM tab (has temp+hum cards); ORP (model 4) → EC tab (big card)
+    int default_view = (int)cfg.model_idx;
+    if (default_view == 3) default_view = 0;
+    else if (default_view >= 4) default_view = 1;
+    switch_view(default_view);
 }
 
 // ── ui_user_update ────────────────────────────────────────────────────────────
@@ -588,6 +593,7 @@ void ui_user_update_ec(float ec)
 {
     if (!scr_user) return;
     char buf[32];
+    if (lbl_ec_unit) lv_label_set_text(lbl_ec_unit, "uS/cm");
 
     if (!std::isnan(ec)) {
         snprintf(buf, sizeof(buf), "%.0f", ec);
@@ -623,5 +629,46 @@ void ui_user_update_leak(bool alarm)
         lv_label_set_text(lbl_leak_big, alarm ? "ALARM" : "NORMAL");
         lv_obj_set_style_text_color(lbl_leak_big,
             alarm ? lv_color_hex(0xFF6666u) : lv_color_hex(0x44FF88u), 0);
+    }
+}
+
+// ── ui_user_update_th ─────────────────────────────────────────────────────────
+
+void ui_user_update_th(float temp, float hum)
+{
+    if (!scr_user) return;
+    char buf[16];
+
+    snprintf(buf, sizeof(buf), "%.1f", temp);
+    if (lbl_temp) lv_label_set_text(lbl_temp, buf);
+
+    snprintf(buf, sizeof(buf), "%.1f", hum);
+    if (lbl_hum) lv_label_set_text(lbl_hum, buf);
+}
+
+// ── ui_user_update_orp ────────────────────────────────────────────────────────
+
+void ui_user_update_orp(float orp, float temp)
+{
+    if (!scr_user) return;
+    char buf[32];
+
+    if (lbl_ec_unit) lv_label_set_text(lbl_ec_unit, "mV");
+
+    if (!std::isnan(orp)) {
+        snprintf(buf, sizeof(buf), "%.0f", orp);
+        if (nav_ec_val) lv_label_set_text(nav_ec_val, buf);
+        if (lbl_ec_big) lv_label_set_text(lbl_ec_big, buf);
+        if (lbl_ec_big) lv_obj_set_style_text_color(lbl_ec_big, lv_color_hex(0x44FFBBu), 0);
+    } else {
+        if (nav_ec_val) lv_label_set_text(nav_ec_val, "--");
+        if (lbl_ec_big) lv_label_set_text(lbl_ec_big, "--");
+    }
+
+    if (!std::isnan(temp)) {
+        snprintf(buf, sizeof(buf), "Temp  %.1f  \xc2\xb0""C", temp);
+        if (lbl_tds_big) lv_label_set_text(lbl_tds_big, buf);
+    } else {
+        if (lbl_tds_big) lv_label_set_text(lbl_tds_big, "Temp  --  \xc2\xb0""C");
     }
 }

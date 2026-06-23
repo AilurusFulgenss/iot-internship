@@ -154,6 +154,8 @@ static const char HTML[] =
 "<option value='0'>SN-300BYH-M (PM/Temp/Hum/Sound)</option>"
 "<option value='1'>CWT-EC/TDS (0-44000 uS/cm)</option>"
 "<option value='2'>LD100 Leak Detector</option>"
+"<option value='3'>CWT-TH04S (Temp/Hum)</option>"
+"<option value='4'>BH-485-ORP (ORP+Temp)</option>"
 "</select>"
 "<div style='display:flex;align-items:center;gap:12px;margin:8px 0'>"
 "<span style='color:#556677;font-size:14px;white-space:nowrap'>Slave ID</span>"
@@ -200,6 +202,8 @@ static const char HTML[] =
 "    }else if(d.leak!==undefined){"
 "      var sc=d.leak?'color:#ff4444':'color:#00cc44';"
 "      tst.innerHTML=hdr+'Leak: <b style=\"'+sc+'\">'+d.status+'</b>';"
+"    }else if(d.orp!==undefined){"
+"      tst.innerHTML=hdr+'ORP: <b>'+d.orp+' mV</b>  Temp: <b>'+d.temp+'&deg;C</b>';"
 "    }else{"
 "      tst.innerHTML=hdr"
 "        +'Temp: <b>'+d.temp+'&deg;C</b>  Hum: <b>'+d.hum+'%</b><br>'"
@@ -341,9 +345,20 @@ static esp_err_t get_sensor_test_handler(httpd_req_t *req)
                 alarm ? "true" : "false",
                 alarm ? "ALARM" : "NORMAL");
 
+        } else if (m->type == SENSOR_TYPE_ORP) {
+            float orp  = (m->idx_orp  >= 0) ? (int16_t)raw.regs[m->idx_orp]  / m->scale : NAN;
+            float temp = (m->idx_temp >= 0) ? (int16_t)raw.regs[m->idx_temp] / m->scale : NAN;
+            char os[10], ts[8];
+            if (isnan(orp))  snprintf(os, sizeof(os), "null"); else snprintf(os, sizeof(os), "%.1f", orp);
+            if (isnan(temp)) snprintf(ts, sizeof(ts), "null"); else snprintf(ts, sizeof(ts), "%.1f", temp);
+            snprintf(json, sizeof(json),
+                "{\"ok\":true,\"model\":\"%s\",\"slave\":%d,\"regs\":%s,"
+                "\"orp\":%s,\"temp\":%s}",
+                m->name, cfg.slave_id, regs_str, os, ts);
+
         } else {
-            float temp  = (m->idx_temp  >= 0) ? raw.regs[m->idx_temp]  / m->scale : NAN;
-            float hum   = (m->idx_hum   >= 0) ? raw.regs[m->idx_hum]   / m->scale : NAN;
+            float temp  = (m->idx_temp  >= 0) ? (int16_t)raw.regs[m->idx_temp] / m->scale : NAN;
+            float hum   = (m->idx_hum   >= 0) ? raw.regs[m->idx_hum]           / m->scale : NAN;
             float pm10  = (m->idx_pm10  >= 0) ? raw.regs[m->idx_pm10]  / m->scale : NAN;
             float pm25  = (m->idx_pm25  >= 0) ? raw.regs[m->idx_pm25]  / m->scale : NAN;
             float sound = (m->idx_sound >= 0) ? (float)raw.regs[m->idx_sound]     : NAN;

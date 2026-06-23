@@ -21,6 +21,7 @@ const sensor_model_t SENSOR_MODELS[SENSOR_MODEL_COUNT] = {
         /*idx_sound*/ 5,
         /*idx_ec*/   -1,
         /*idx_leak*/ -1,
+        /*idx_orp*/  -1,
         /*scale*/    10.0f,
     },
     {
@@ -35,6 +36,7 @@ const sensor_model_t SENSOR_MODELS[SENSOR_MODEL_COUNT] = {
         /*idx_sound*/ -1,
         /*idx_ec*/     0,
         /*idx_leak*/  -1,
+        /*idx_orp*/   -1,
         /*scale*/      1.0f,
     },
     {
@@ -49,7 +51,40 @@ const sensor_model_t SENSOR_MODELS[SENSOR_MODEL_COUNT] = {
         /*idx_sound*/ -1,
         /*idx_ec*/    -1,
         /*idx_leak*/   0,
+        /*idx_orp*/   -1,
         /*scale*/      1.0f,
+    },
+    {
+        // Model 3: CWT-TH04S — temp / hum only
+        // Default baud 4800 — must change to 9600 before first use (see cwt_th_set_baud_9600 in main.cpp)
+        // FC03, reg 0x0000=Hum*10, reg 0x0001=Temp*10 (signed int16)
+        "CWT-TH04S", SENSOR_TYPE_TH,
+        0x0000, 2, 0x03,
+        /*idx_temp*/   1,
+        /*idx_hum*/    0,
+        /*idx_pm10*/  -1,
+        /*idx_pm25*/  -1,
+        /*idx_sound*/ -1,
+        /*idx_ec*/    -1,
+        /*idx_leak*/  -1,
+        /*idx_orp*/   -1,
+        /*scale*/     10.0f,
+    },
+    {
+        // Model 4: BH-485-ORP — ORP mV + temp
+        // Default baud 9600 — no pre-wiring needed
+        // FC03, reg 0x0000=Temp*10 (°C, signed), reg 0x0001=ORP*10 (mV, signed)
+        "BH-485-ORP", SENSOR_TYPE_ORP,
+        0x0000, 2, 0x03,
+        /*idx_temp*/   0,
+        /*idx_hum*/   -1,
+        /*idx_pm10*/  -1,
+        /*idx_pm25*/  -1,
+        /*idx_sound*/ -1,
+        /*idx_ec*/    -1,
+        /*idx_leak*/  -1,
+        /*idx_orp*/    1,
+        /*scale*/     10.0f,
     },
 };
 

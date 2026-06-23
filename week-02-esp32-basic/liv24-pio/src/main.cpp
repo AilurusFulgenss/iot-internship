@@ -20,6 +20,7 @@
 #include "wifi_mqtt.h"
 #include "history.h"
 #include "ui_alert.h"
+#include "ui_flora.h"
 #include "sensor_config.h"
 #include "cJSON.h"
 #include <math.h>
@@ -333,6 +334,30 @@ static uint16_t crc16(const uint8_t *buf, int len)
     return crc;
 }
 
+// Sent once at boot when CWT-TH04S is selected: changes its baud from 4800 → 9600.
+// After the sensor stores the new baud in its flash, every subsequent boot
+// will timeout here (sensor is already at 9600 and won't hear 4800 traffic),
+// then re-init at 9600 and continue normally. ~500 ms penalty per boot.
+static void cwt_th_set_baud_9600(void)
+{
+    uart_set_baudrate(RS485_UART, 4800);
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    // FC06 write reg 0x07D1 = 0x0002 (baud 9600)
+    uint8_t req[8] = {0x01, 0x06, 0x07, 0xD1, 0x00, 0x02, 0x00, 0x00};
+    uint16_t crc = crc16(req, 6);
+    req[6] = crc & 0xFF;
+    req[7] = crc >> 8;
+
+    uart_flush_input(RS485_UART);
+    uart_write_bytes(RS485_UART, req, sizeof(req));
+    vTaskDelay(pdMS_TO_TICKS(300));
+
+    uart_set_baudrate(RS485_UART, MODBUS_BAUD);
+    vTaskDelay(pdMS_TO_TICKS(100));
+    ESP_LOGI(TAG, "CWT-TH04S: baud set to 9600");
+}
+
 static void rs485_init(void)
 {
     uart_config_t cfg = {
@@ -398,8 +423,8 @@ static void sensor_read_task(void *arg)
 
             switch (m->type) {
             case SENSOR_TYPE_PM: {
-                float temp = (m->idx_temp  >= 0) ? regs[m->idx_temp]  / m->scale : NAN;
-                float hum  = (m->idx_hum   >= 0) ? regs[m->idx_hum]   / m->scale : NAN;
+                float temp = (m->idx_temp  >= 0) ? (int16_t)regs[m->idx_temp]  / m->scale : NAN;
+                float hum  = (m->idx_hum   >= 0) ? regs[m->idx_hum]            / m->scale : NAN;
                 float pm10 = (m->idx_pm10  >= 0) ? regs[m->idx_pm10]  / m->scale : NAN;
                 float pm25 = (m->idx_pm25  >= 0) ? regs[m->idx_pm25]  / m->scale : NAN;
                 uint16_t snd = (m->idx_sound >= 0) ? regs[m->idx_sound] : 0;
@@ -450,6 +475,32 @@ static void sensor_read_task(void *arg)
                 wifi_mqtt_publish_leak(alarm);
                 break;
             }
+            case SENSOR_TYPE_TH: {
+                float temp = (m->idx_temp >= 0) ? (int16_t)regs[m->idx_temp] / m->scale : NAN;
+                float hum  = (m->idx_hum  >= 0) ? regs[m->idx_hum]           / m->scale : NAN;
+                ESP_LOGI(TAG, "TH: T=%.1fC H=%.1f%%", temp, hum);
+
+                bsp_display_lock(0);
+                ui_alert_set_mqtt_status(wifi_mqtt_is_connected());
+                ui_user_update_th(temp, hum);
+                bsp_display_unlock();
+
+                wifi_mqtt_publish_th(temp, hum);
+                break;
+            }
+            case SENSOR_TYPE_ORP: {
+                float orp  = (m->idx_orp  >= 0) ? (int16_t)regs[m->idx_orp]  / m->scale : NAN;
+                float temp = (m->idx_temp >= 0) ? (int16_t)regs[m->idx_temp] / m->scale : NAN;
+                ESP_LOGI(TAG, "ORP: %.1f mV  T=%.1fC", orp, temp);
+
+                bsp_display_lock(0);
+                ui_alert_set_mqtt_status(wifi_mqtt_is_connected());
+                ui_user_update_orp(orp, temp);
+                bsp_display_unlock();
+
+                wifi_mqtt_publish_orp(orp, temp);
+                break;
+            }
             }
         } else {
             ESP_LOGW(TAG, "sensor: no response");
@@ -464,9 +515,9 @@ static void touch_nav_init(void)
 {
     // ── ▶ next-page button at bottom-right of USER-mode screens ──────────────
     // Strip on PM screen moved up to -72 (from -48), so ▶ at -8 clears it with 8px gap.
-    lv_obj_t *cycle_scrns[] = {scr_user, scr_pm, scr[2]};
-    int       cycle_y[]     = {-8,       -8,     -8};
-    for (int i = 0; i < 3; i++) {
+    lv_obj_t *cycle_scrns[] = {scr_user, scr_pm, scr[2], scr_flora};
+    int       cycle_y[]     = {-8,       -8,     -8,      -8};
+    for (int i = 0; i < 4; i++) {
         lv_obj_t *btn = lv_btn_create(cycle_scrns[i]);
         lv_obj_set_size(btn, 88, 56);
         lv_obj_align(btn, LV_ALIGN_BOTTOM_RIGHT, -8, cycle_y[i]);
@@ -559,6 +610,9 @@ void on_short_press(void)
     } else if (active == scr_pm) {
         lv_scr_load_anim(scr[2], LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
         ESP_LOGI(TAG, "-> Relay page");
+    } else if (active == scr[2]) {
+        lv_scr_load_anim(scr_flora, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
+        ESP_LOGI(TAG, "-> Flora page");
     } else {
         lv_scr_load_anim(scr_user, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 300, 0, false);
         ESP_LOGI(TAG, "-> User screen");
@@ -636,6 +690,27 @@ static void on_hist_7d(const char *d, int len)
     }
 }
 
+static void on_flora(const char *json, int len)
+{
+    char buf[128];
+    int n = len < (int)sizeof(buf) - 1 ? len : (int)sizeof(buf) - 1;
+    memcpy(buf, json, n); buf[n] = '\0';
+
+    cJSON *root = cJSON_Parse(buf);
+    if (!root) return;
+
+    float temp      = cJSON_IsNumber(cJSON_GetObjectItem(root, "temp"))      ? (float)cJSON_GetObjectItem(root, "temp")->valuedouble      : NAN;
+    float moisture  = cJSON_IsNumber(cJSON_GetObjectItem(root, "moisture"))  ? (float)cJSON_GetObjectItem(root, "moisture")->valuedouble  : NAN;
+    float light     = cJSON_IsNumber(cJSON_GetObjectItem(root, "light"))     ? (float)cJSON_GetObjectItem(root, "light")->valuedouble     : NAN;
+    float fertility = cJSON_IsNumber(cJSON_GetObjectItem(root, "fertility")) ? (float)cJSON_GetObjectItem(root, "fertility")->valuedouble : NAN;
+    cJSON_Delete(root);
+
+    if (bsp_display_lock(0)) {
+        ui_flora_update(temp, moisture, light, fertility);
+        bsp_display_unlock();
+    }
+}
+
 static void logo_url_received(const char *url)
 {
     ESP_LOGI(TAG, "Logo URL: %s", url);
@@ -665,6 +740,11 @@ extern "C" void app_main(void)
     sensor_config_init();
     calib_init();
     rs485_init();
+
+    // CWT-TH04S ships at 4800 baud — change to 9600 on first boot with this model
+    if (sensor_config_get().model_idx == 3) {
+        cwt_th_set_baud_9600();
+    }
 
     // Relay GPIO init — default OFF
     gpio_config_t relay_cfg = {};
@@ -737,6 +817,7 @@ extern "C" void app_main(void)
     ui_pm_create();
     ui_dev_create();
     ui_exec_create();
+    ui_flora_create();
     touch_nav_init();
     ui_alert_init();
     lv_scr_load(scr[0]);     // show logo splash — inside the same lock block
@@ -756,6 +837,7 @@ extern "C" void app_main(void)
     wifi_mqtt_set_logo_url_cb(logo_url_received);
     wifi_mqtt_set_history_cb(on_hist_24h, on_hist_7d);
     wifi_mqtt_set_test_alert_cb(on_test_alert);
+    wifi_mqtt_set_flora_cb(on_flora);
     wifi_mqtt_init(MQTT_BROKER_URI);
     eth_start_background();
 

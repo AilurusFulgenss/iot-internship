@@ -12,6 +12,8 @@ typedef enum {
     SENSOR_TYPE_PM,    // temp / hum / PM2.5 / PM10 / sound  (FC03)
     SENSOR_TYPE_EC,    // EC/TDS conductivity                 (FC03)
     SENSOR_TYPE_LEAK,  // liquid leak status                  (FC04)
+    SENSOR_TYPE_TH,    // temp / hum only                     (FC03)
+    SENSOR_TYPE_ORP,   // ORP mV + temp                       (FC03)
 } sensor_type_t;
 
 typedef struct {
@@ -27,10 +29,11 @@ typedef struct {
     int8_t         idx_sound;
     int8_t         idx_ec;    // EC/TDS register index (-1 if N/A)
     int8_t         idx_leak;  // leak status register index (-1 if N/A)
+    int8_t         idx_orp;   // ORP register index (-1 if N/A)
     float          scale;
 } sensor_model_t;
 
-#define SENSOR_MODEL_COUNT 3
+#define SENSOR_MODEL_COUNT 5
 extern const sensor_model_t SENSOR_MODELS[SENSOR_MODEL_COUNT];
 
 // ── Saved config (persisted to NVS flash) ────────────────────────────────────
