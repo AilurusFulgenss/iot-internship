@@ -12,3 +12,4 @@ void ui_user_update_ec(float ec);
 void ui_user_update_leak(bool alarm);
 void ui_user_update_th(float temp, float hum);
 void ui_user_update_orp(float orp, float temp);
+void ui_user_update_hhcc(float temp, float moisture, float light, float fertility, float battery);

@@ -23,6 +23,11 @@ static void (*s_hist_24h_cb)(const char *, int)  = NULL;
 static void (*s_hist_7d_cb )(const char *, int)  = NULL;
 static void (*s_test_alert_cb)(const char *, int) = NULL;
 static void (*s_flora_cb)(const char *, int)      = NULL;
+static void (*s_hist_ec_cb  )(const char *, int)  = NULL;
+static void (*s_hist_orp_cb )(const char *, int)  = NULL;
+static void (*s_hist_hhcc_cb)(const char *, int)  = NULL;
+static void (*s_hist_th_cb  )(const char *, int)  = NULL;
+static void (*s_hist_leak_cb)(const char *, int)  = NULL;
 static char s_broker_uri[128];
 
 // ── MQTT events ───────────────────────────────────────────────────────────────
@@ -43,6 +48,11 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
         esp_mqtt_client_subscribe(s_mqtt, "liv24/history/7d",   1);
         esp_mqtt_client_subscribe(s_mqtt, "liv24/test/alert",   0);
         esp_mqtt_client_subscribe(s_mqtt, "liv24/flora",        1);
+        esp_mqtt_client_subscribe(s_mqtt, "liv24/hist/ec",      1);
+        esp_mqtt_client_subscribe(s_mqtt, "liv24/hist/orp",     1);
+        esp_mqtt_client_subscribe(s_mqtt, "liv24/hist/hhcc",    1);
+        esp_mqtt_client_subscribe(s_mqtt, "liv24/hist/th",      1);
+        esp_mqtt_client_subscribe(s_mqtt, "liv24/hist/leak",    1);
         // broker delivers retained messages automatically on subscribe — no request needed
         break;
 
@@ -73,6 +83,26 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
             }
             if (strcmp(topic, "liv24/flora") == 0) {
                 if (s_flora_cb) s_flora_cb(ev->data, ev->data_len);
+                break;
+            }
+            if (strcmp(topic, "liv24/hist/ec") == 0) {
+                if (s_hist_ec_cb) s_hist_ec_cb(ev->data, ev->data_len);
+                break;
+            }
+            if (strcmp(topic, "liv24/hist/orp") == 0) {
+                if (s_hist_orp_cb) s_hist_orp_cb(ev->data, ev->data_len);
+                break;
+            }
+            if (strcmp(topic, "liv24/hist/hhcc") == 0) {
+                if (s_hist_hhcc_cb) s_hist_hhcc_cb(ev->data, ev->data_len);
+                break;
+            }
+            if (strcmp(topic, "liv24/hist/th") == 0) {
+                if (s_hist_th_cb) s_hist_th_cb(ev->data, ev->data_len);
+                break;
+            }
+            if (strcmp(topic, "liv24/hist/leak") == 0) {
+                if (s_hist_leak_cb) s_hist_leak_cb(ev->data, ev->data_len);
                 break;
             }
             if (strcmp(topic, "liv24/logo/url") == 0) {
@@ -264,6 +294,20 @@ void wifi_mqtt_set_flora_cb(void (*cb)(const char *json, int len))
     s_flora_cb = cb;
 }
 
+void wifi_mqtt_set_hist_sensor_cbs(
+    void (*ec_cb  )(const char *d, int len),
+    void (*orp_cb )(const char *d, int len),
+    void (*hhcc_cb)(const char *d, int len),
+    void (*th_cb  )(const char *d, int len),
+    void (*leak_cb)(const char *d, int len))
+{
+    s_hist_ec_cb   = ec_cb;
+    s_hist_orp_cb  = orp_cb;
+    s_hist_hhcc_cb = hhcc_cb;
+    s_hist_th_cb   = th_cb;
+    s_hist_leak_cb = leak_cb;
+}
+
 bool wifi_mqtt_is_connected(void)
 {
     return s_mqtt_ready;
@@ -293,13 +337,13 @@ void wifi_mqtt_publish_ec(float ec)
     if (!s_mqtt_ready) return;
     char payload[48];
     snprintf(payload, sizeof(payload), "{\"ec\":%.1f}", ec);
-    esp_mqtt_client_publish(s_mqtt, "liv24/sensors", payload, 0, 0, 0);
+    esp_mqtt_client_publish(s_mqtt, "liv24/ec", payload, 0, 0, 0);
 }
 
 void wifi_mqtt_publish_leak(bool alarm)
 {
     if (!s_mqtt_ready) return;
-    esp_mqtt_client_publish(s_mqtt, "liv24/sensors",
+    esp_mqtt_client_publish(s_mqtt, "liv24/leak",
         alarm ? "{\"leak\":true}" : "{\"leak\":false}", 0, 0, 0);
 }
 
@@ -308,7 +352,7 @@ void wifi_mqtt_publish_th(float temp, float hum)
     if (!s_mqtt_ready) return;
     char payload[64];
     snprintf(payload, sizeof(payload), "{\"temp\":%.1f,\"hum\":%.1f}", temp, hum);
-    esp_mqtt_client_publish(s_mqtt, "liv24/sensors", payload, 0, 0, 0);
+    esp_mqtt_client_publish(s_mqtt, "liv24/th", payload, 0, 0, 0);
 }
 
 void wifi_mqtt_publish_orp(float orp, float temp)
@@ -316,5 +360,5 @@ void wifi_mqtt_publish_orp(float orp, float temp)
     if (!s_mqtt_ready) return;
     char payload[64];
     snprintf(payload, sizeof(payload), "{\"orp\":%.1f,\"temp\":%.1f}", orp, temp);
-    esp_mqtt_client_publish(s_mqtt, "liv24/sensors", payload, 0, 0, 0);
+    esp_mqtt_client_publish(s_mqtt, "liv24/orp", payload, 0, 0, 0);
 }

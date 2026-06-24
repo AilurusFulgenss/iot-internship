@@ -14,13 +14,13 @@
 #include "ui_user.h"
 #include "ui_dev.h"
 #include "ui_exec.h"
+#include "ui_exec_detail.h"
 #include "ui_pm.h"
 #include "calib.h"
 #include "eth_upload.h"
 #include "wifi_mqtt.h"
 #include "history.h"
 #include "ui_alert.h"
-#include "ui_flora.h"
 #include "sensor_config.h"
 #include "cJSON.h"
 #include <math.h>
@@ -443,7 +443,7 @@ static void sensor_read_task(void *arg)
                 ui_user_update(t_cal, h_cal, p25_cal, p10_cal, (int)s_cal);
                 ui_pm_update(t_cal, h_cal, p25_cal, p10_cal, (float)s_cal);
                 ui_dev_update(temp, hum, (float)snd, pm25, pm10);
-                ui_exec_update(t_cal, h_cal, p25_cal, p10_cal);
+                ui_exec_update_pm(t_cal, h_cal, p25_cal, p10_cal);
                 ui_alert_check(t_cal, h_cal, p25_cal, p10_cal, s_cal);
                 bsp_display_unlock();
 
@@ -457,6 +457,7 @@ static void sensor_read_task(void *arg)
                 bsp_display_lock(0);
                 ui_alert_set_mqtt_status(wifi_mqtt_is_connected());
                 ui_user_update_ec(ec);
+                ui_exec_update_ec(ec);
                 bsp_display_unlock();
 
                 wifi_mqtt_publish_ec(ec);
@@ -470,6 +471,7 @@ static void sensor_read_task(void *arg)
                 bsp_display_lock(0);
                 ui_alert_set_mqtt_status(wifi_mqtt_is_connected());
                 ui_user_update_leak(alarm);
+                ui_exec_update_leak(alarm);
                 bsp_display_unlock();
 
                 wifi_mqtt_publish_leak(alarm);
@@ -483,6 +485,7 @@ static void sensor_read_task(void *arg)
                 bsp_display_lock(0);
                 ui_alert_set_mqtt_status(wifi_mqtt_is_connected());
                 ui_user_update_th(temp, hum);
+                ui_exec_update_th(temp, hum);
                 bsp_display_unlock();
 
                 wifi_mqtt_publish_th(temp, hum);
@@ -496,6 +499,7 @@ static void sensor_read_task(void *arg)
                 bsp_display_lock(0);
                 ui_alert_set_mqtt_status(wifi_mqtt_is_connected());
                 ui_user_update_orp(orp, temp);
+                ui_exec_update_orp(orp, temp);
                 bsp_display_unlock();
 
                 wifi_mqtt_publish_orp(orp, temp);
@@ -515,9 +519,9 @@ static void touch_nav_init(void)
 {
     // ── ▶ next-page button at bottom-right of USER-mode screens ──────────────
     // Strip on PM screen moved up to -72 (from -48), so ▶ at -8 clears it with 8px gap.
-    lv_obj_t *cycle_scrns[] = {scr_user, scr_pm, scr[2], scr_flora};
-    int       cycle_y[]     = {-8,       -8,     -8,      -8};
-    for (int i = 0; i < 4; i++) {
+    lv_obj_t *cycle_scrns[] = {scr_user, scr_pm, scr[2]};
+    int       cycle_y[]     = {-8, -8, -8};
+    for (int i = 0; i < 3; i++) {
         lv_obj_t *btn = lv_btn_create(cycle_scrns[i]);
         lv_obj_set_size(btn, 88, 56);
         lv_obj_align(btn, LV_ALIGN_BOTTOM_RIGHT, -8, cycle_y[i]);
@@ -597,7 +601,7 @@ static void touch_nav_init(void)
 
 // ─── btn_mode callbacks ────────────────────────────────
 
-// Short press: USER -> PM -> RELAY -> USER  |  EXEC has no sub-pages
+// Short press cycle: USER → PM History → Relay → USER
 void on_short_press(void)
 {
     bsp_display_lock(0);
@@ -610,9 +614,6 @@ void on_short_press(void)
     } else if (active == scr_pm) {
         lv_scr_load_anim(scr[2], LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
         ESP_LOGI(TAG, "-> Relay page");
-    } else if (active == scr[2]) {
-        lv_scr_load_anim(scr_flora, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
-        ESP_LOGI(TAG, "-> Flora page");
     } else {
         lv_scr_load_anim(scr_user, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 300, 0, false);
         ESP_LOGI(TAG, "-> User screen");
@@ -685,9 +686,39 @@ static void on_hist_7d(const char *d, int len)
 {
     hist_parse_7d(d, len);
     if (bsp_display_lock(0)) {
-        ui_exec_update_history();
+        ui_exec_detail_refresh();
         bsp_display_unlock();
     }
+}
+
+static void on_hist_ec(const char *d, int len)
+{
+    hist_parse_ec(d, len);
+    if (bsp_display_lock(0)) { ui_exec_detail_refresh(); bsp_display_unlock(); }
+}
+
+static void on_hist_orp(const char *d, int len)
+{
+    hist_parse_orp(d, len);
+    if (bsp_display_lock(0)) { ui_exec_detail_refresh(); bsp_display_unlock(); }
+}
+
+static void on_hist_hhcc(const char *d, int len)
+{
+    hist_parse_hhcc(d, len);
+    if (bsp_display_lock(0)) { ui_exec_detail_refresh(); bsp_display_unlock(); }
+}
+
+static void on_hist_th(const char *d, int len)
+{
+    hist_parse_th(d, len);
+    if (bsp_display_lock(0)) { ui_exec_detail_refresh(); bsp_display_unlock(); }
+}
+
+static void on_hist_leak(const char *d, int len)
+{
+    hist_parse_leak(d, len);
+    if (bsp_display_lock(0)) { ui_exec_detail_refresh(); bsp_display_unlock(); }
 }
 
 static void on_flora(const char *json, int len)
@@ -703,10 +734,12 @@ static void on_flora(const char *json, int len)
     float moisture  = cJSON_IsNumber(cJSON_GetObjectItem(root, "moisture"))  ? (float)cJSON_GetObjectItem(root, "moisture")->valuedouble  : NAN;
     float light     = cJSON_IsNumber(cJSON_GetObjectItem(root, "light"))     ? (float)cJSON_GetObjectItem(root, "light")->valuedouble     : NAN;
     float fertility = cJSON_IsNumber(cJSON_GetObjectItem(root, "fertility")) ? (float)cJSON_GetObjectItem(root, "fertility")->valuedouble : NAN;
+    float battery   = cJSON_IsNumber(cJSON_GetObjectItem(root, "battery"))   ? (float)cJSON_GetObjectItem(root, "battery")->valuedouble   : NAN;
     cJSON_Delete(root);
 
     if (bsp_display_lock(0)) {
-        ui_flora_update(temp, moisture, light, fertility);
+        ui_user_update_hhcc(temp, moisture, light, fertility, battery);
+        ui_exec_update_hhcc(temp, moisture, light, fertility, battery);
         bsp_display_unlock();
     }
 }
@@ -781,6 +814,15 @@ extern "C" void app_main(void)
         disp_cfg.lvgl_port_cfg.task_stack = 16384;
         bsp_display_start_with_config(&disp_cfg);
     }
+    // Kconfig LV_MEM_POOL_EXPAND_SIZE_KILOBYTES only relaxes TLSF size limit —
+    // the extra PSRAM pool must be registered explicitly via lv_mem_add_pool().
+    static void *s_lvgl_psram_pool = heap_caps_malloc(256 * 1024, MALLOC_CAP_SPIRAM);
+    if (s_lvgl_psram_pool) {
+        bsp_display_lock(0);
+        lv_mem_add_pool(s_lvgl_psram_pool, 256 * 1024);
+        bsp_display_unlock();
+        ESP_LOGI(TAG, "LVGL PSRAM pool: 256KB @%p", s_lvgl_psram_pool);
+    }
     bsp_display_backlight_on();
 
     // Initialize LVGL POSIX filesystem driver (maps drive 'A' → /spiffs)
@@ -817,7 +859,7 @@ extern "C" void app_main(void)
     ui_pm_create();
     ui_dev_create();
     ui_exec_create();
-    ui_flora_create();
+    ui_exec_detail_create();
     touch_nav_init();
     ui_alert_init();
     lv_scr_load(scr[0]);     // show logo splash — inside the same lock block
@@ -838,6 +880,7 @@ extern "C" void app_main(void)
     wifi_mqtt_set_history_cb(on_hist_24h, on_hist_7d);
     wifi_mqtt_set_test_alert_cb(on_test_alert);
     wifi_mqtt_set_flora_cb(on_flora);
+    wifi_mqtt_set_hist_sensor_cbs(on_hist_ec, on_hist_orp, on_hist_hhcc, on_hist_th, on_hist_leak);
     wifi_mqtt_init(MQTT_BROKER_URI);
     eth_start_background();
 
