@@ -550,8 +550,8 @@ static void touch_nav_init(void)
     }
 
     // ── DEV / EXEC hidden zones — 5-tap on top corners, no visible UI ───────
-    // top-left  × 5  → DEV (calibrate)
-    // top-right × 5  → EXEC (overview)
+    // top-left   × 5  → DEV (calibrate)
+    // top-center × 5  → EXEC (overview)
     {
         struct TapZone { uint32_t t[5]; int n; app_mode_t mode; };
         static TapZone tz_dev  = {{}, 0, MODE_DEV};
@@ -571,12 +571,14 @@ static void touch_nav_init(void)
             }
         };
 
-        TapZone *zones[2] = {&tz_dev, &tz_exec};
-        lv_align_t aligns[2] = {LV_ALIGN_TOP_LEFT, LV_ALIGN_TOP_RIGHT};
+        TapZone *zones[2]    = {&tz_dev, &tz_exec};
+        lv_align_t aligns[2] = {LV_ALIGN_TOP_LEFT, LV_ALIGN_TOP_MID};
+        int x_off[2]         = {0, 0};
+        int y_off[2]         = {0, 0};
         for (int i = 0; i < 2; i++) {
             lv_obj_t *z = lv_obj_create(scr_user);
             lv_obj_set_size(z, 90, 90);
-            lv_obj_align(z, aligns[i], 0, 0);
+            lv_obj_align(z, aligns[i], x_off[i], y_off[i]);
             lv_obj_set_style_bg_opa(z, LV_OPA_TRANSP, 0);
             lv_obj_set_style_border_width(z, 0, 0);
             lv_obj_set_style_shadow_width(z, 0, 0);
