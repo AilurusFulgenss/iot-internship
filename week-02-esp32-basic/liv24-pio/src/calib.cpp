@@ -5,7 +5,7 @@
 
 static const char *TAG    = "CALIB";
 static const char *NVS_NS = "calib";
-static const char *NVS_KEY = "v1";
+static const char *NVS_KEY = "v2";
 
 // Default: no correction
 calib_data_t g_calib = {
@@ -14,6 +14,11 @@ calib_data_t g_calib = {
     {0.0f, 1.0f},   // sound
     {0.0f, 1.0f},   // pm25
     {0.0f, 1.0f},   // pm10
+    {0.0f, 1.0f},   // th_temp
+    {0.0f, 1.0f},   // th_hum
+    {0.0f, 1.0f},   // ec
+    {0.0f, 1.0f},   // orp
+    {0.0f, 1.0f},   // orp_temp
 };
 
 void calib_save(void)

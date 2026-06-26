@@ -106,6 +106,12 @@ void hist_parse_hhcc(const char *json, int len)
     parse_arr(root, "fert",  g_hist_7d.d[HIST_HHCC_FERT],  HIST_7D_LEN);
     g_hist_7d.cnt_hhcc = parse_arr(root, "temp", g_hist_7d.d[HIST_HHCC_TEMP], HIST_7D_LEN);
 
+    // HA BLE Integration ส่ง HHCC temp เป็น °F — แปลงเป็น °C ก่อนเก็บ
+    for (int i = 0; i < g_hist_7d.cnt_hhcc; i++) {
+        float *v = &g_hist_7d.d[HIST_HHCC_TEMP][i];
+        if (!isnan(*v)) *v = (*v - 32.0f) * 5.0f / 9.0f;
+    }
+
     ESP_LOGI(TAG, "hhcc 7d parsed: %d points", g_hist_7d.cnt_hhcc);
     cJSON_Delete(root);
 }

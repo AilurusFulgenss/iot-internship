@@ -442,7 +442,7 @@ static void sensor_read_task(void *arg)
                 ui_alert_set_mqtt_status(wifi_mqtt_is_connected());
                 ui_user_update(t_cal, h_cal, p25_cal, p10_cal, (int)s_cal);
                 ui_pm_update(t_cal, h_cal, p25_cal, p10_cal, (float)s_cal);
-                ui_dev_update(temp, hum, (float)snd, pm25, pm10);
+                ui_dev_update_sn300(temp, hum, (float)snd, pm25, pm10);
                 ui_exec_update_pm(t_cal, h_cal, p25_cal, p10_cal);
                 ui_alert_check(t_cal, h_cal, p25_cal, p10_cal, s_cal);
                 bsp_display_unlock();
@@ -451,16 +451,18 @@ static void sensor_read_task(void *arg)
                 break;
             }
             case SENSOR_TYPE_EC: {
-                float ec = (m->idx_ec >= 0) ? regs[m->idx_ec] / m->scale : NAN;
-                ESP_LOGI(TAG, "EC=%.1f uS/cm", ec);
+                float ec     = (m->idx_ec >= 0) ? regs[m->idx_ec] / m->scale : NAN;
+                float ec_cal = calib_apply(ec, &g_calib.ec);
+                ESP_LOGI(TAG, "EC=%.1f uS/cm (cal=%.1f)", ec, ec_cal);
 
                 bsp_display_lock(0);
                 ui_alert_set_mqtt_status(wifi_mqtt_is_connected());
-                ui_user_update_ec(ec);
-                ui_exec_update_ec(ec);
+                ui_user_update_ec(ec_cal);
+                ui_exec_update_ec(ec_cal);
+                ui_dev_update_ec(ec);
                 bsp_display_unlock();
 
-                wifi_mqtt_publish_ec(ec);
+                wifi_mqtt_publish_ec(ec_cal);
                 break;
             }
             case SENSOR_TYPE_LEAK: {
@@ -478,31 +480,37 @@ static void sensor_read_task(void *arg)
                 break;
             }
             case SENSOR_TYPE_TH: {
-                float temp = (m->idx_temp >= 0) ? (int16_t)regs[m->idx_temp] / m->scale : NAN;
-                float hum  = (m->idx_hum  >= 0) ? regs[m->idx_hum]           / m->scale : NAN;
-                ESP_LOGI(TAG, "TH: T=%.1fC H=%.1f%%", temp, hum);
+                float temp     = (m->idx_temp >= 0) ? (int16_t)regs[m->idx_temp] / m->scale : NAN;
+                float hum      = (m->idx_hum  >= 0) ? regs[m->idx_hum]           / m->scale : NAN;
+                float t_cal    = calib_apply(temp, &g_calib.th_temp);
+                float h_cal    = calib_apply(hum,  &g_calib.th_hum);
+                ESP_LOGI(TAG, "TH: T=%.1fC H=%.1f%% (cal T=%.1f H=%.1f)", temp, hum, t_cal, h_cal);
 
                 bsp_display_lock(0);
                 ui_alert_set_mqtt_status(wifi_mqtt_is_connected());
-                ui_user_update_th(temp, hum);
-                ui_exec_update_th(temp, hum);
+                ui_user_update_th(t_cal, h_cal);
+                ui_exec_update_th(t_cal, h_cal);
+                ui_dev_update_th(temp, hum);
                 bsp_display_unlock();
 
-                wifi_mqtt_publish_th(temp, hum);
+                wifi_mqtt_publish_th(t_cal, h_cal);
                 break;
             }
             case SENSOR_TYPE_ORP: {
-                float orp  = (m->idx_orp  >= 0) ? (int16_t)regs[m->idx_orp]  / m->scale : NAN;
-                float temp = (m->idx_temp >= 0) ? (int16_t)regs[m->idx_temp] / m->scale : NAN;
-                ESP_LOGI(TAG, "ORP: %.1f mV  T=%.1fC", orp, temp);
+                float orp      = (m->idx_orp  >= 0) ? (int16_t)regs[m->idx_orp]  / m->scale : NAN;
+                float temp     = (m->idx_temp >= 0) ? (int16_t)regs[m->idx_temp] / m->scale : NAN;
+                float orp_cal  = calib_apply(orp,  &g_calib.orp);
+                float t_cal    = calib_apply(temp, &g_calib.orp_temp);
+                ESP_LOGI(TAG, "ORP: %.1f mV T=%.1fC (cal ORP=%.1f T=%.1f)", orp, temp, orp_cal, t_cal);
 
                 bsp_display_lock(0);
                 ui_alert_set_mqtt_status(wifi_mqtt_is_connected());
-                ui_user_update_orp(orp, temp);
-                ui_exec_update_orp(orp, temp);
+                ui_user_update_orp(orp_cal, t_cal);
+                ui_exec_update_orp(orp_cal, t_cal);
+                ui_dev_update_orp(orp, temp);
                 bsp_display_unlock();
 
-                wifi_mqtt_publish_orp(orp, temp);
+                wifi_mqtt_publish_orp(orp_cal, t_cal);
                 break;
             }
             }
@@ -541,40 +549,41 @@ static void touch_nav_init(void)
         lv_obj_center(lbl);
     }
 
-    // ── DEV / EXEC mode buttons — dark/hidden, bottom-left of USER screen ────
+    // ── DEV / EXEC hidden zones — 5-tap on top corners, no visible UI ───────
+    // top-left  × 5  → DEV (calibrate)
+    // top-right × 5  → EXEC (overview)
     {
-        lv_obj_t *btn = lv_btn_create(scr_user);
-        lv_obj_set_size(btn, 76, 40);
-        lv_obj_align(btn, LV_ALIGN_BOTTOM_LEFT, 32, -8);
-        lv_obj_set_style_bg_color(btn, lv_color_hex(0x0D0D1A), 0);
-        lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(btn, 0, 0);
-        lv_obj_set_style_radius(btn, 4, 0);
-        lv_obj_set_style_shadow_width(btn, 0, 0);
-        lv_obj_add_event_cb(btn, [](lv_event_t *) { set_app_mode(MODE_DEV); },
-                            LV_EVENT_CLICKED, NULL);
-        lv_obj_t *lbl = lv_label_create(btn);
-        lv_label_set_text(lbl, "DEV");
-        lv_obj_set_style_text_color(lbl, lv_color_hex(0x1C2535), 0);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
-        lv_obj_center(lbl);
-    }
-    {
-        lv_obj_t *btn = lv_btn_create(scr_user);
-        lv_obj_set_size(btn, 76, 40);
-        lv_obj_align(btn, LV_ALIGN_BOTTOM_LEFT, 116, -8);
-        lv_obj_set_style_bg_color(btn, lv_color_hex(0x0D0D1A), 0);
-        lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(btn, 0, 0);
-        lv_obj_set_style_radius(btn, 4, 0);
-        lv_obj_set_style_shadow_width(btn, 0, 0);
-        lv_obj_add_event_cb(btn, [](lv_event_t *) { set_app_mode(MODE_EXEC); },
-                            LV_EVENT_CLICKED, NULL);
-        lv_obj_t *lbl = lv_label_create(btn);
-        lv_label_set_text(lbl, "EXEC");
-        lv_obj_set_style_text_color(lbl, lv_color_hex(0x1C2535), 0);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
-        lv_obj_center(lbl);
+        struct TapZone { uint32_t t[5]; int n; app_mode_t mode; };
+        static TapZone tz_dev  = {{}, 0, MODE_DEV};
+        static TapZone tz_exec = {{}, 0, MODE_EXEC};
+
+        auto tap_cb = [](lv_event_t *e) {
+            auto *tz     = static_cast<TapZone *>(lv_event_get_user_data(e));
+            uint32_t now = lv_tick_get();
+            if (tz->n > 0 && lv_tick_elaps(tz->t[tz->n - 1]) > 600)
+                tz->n = 0;
+            if (tz->n < 5) tz->t[tz->n] = now;
+            tz->n++;
+            if (tz->n >= 5) {
+                if (lv_tick_elaps(tz->t[0]) <= 3000)
+                    set_app_mode(tz->mode);
+                tz->n = 0;
+            }
+        };
+
+        TapZone *zones[2] = {&tz_dev, &tz_exec};
+        lv_align_t aligns[2] = {LV_ALIGN_TOP_LEFT, LV_ALIGN_TOP_RIGHT};
+        for (int i = 0; i < 2; i++) {
+            lv_obj_t *z = lv_obj_create(scr_user);
+            lv_obj_set_size(z, 90, 90);
+            lv_obj_align(z, aligns[i], 0, 0);
+            lv_obj_set_style_bg_opa(z, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(z, 0, 0);
+            lv_obj_set_style_shadow_width(z, 0, 0);
+            lv_obj_add_flag(z, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_clear_flag(z, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_add_event_cb(z, tap_cb, LV_EVENT_CLICKED, zones[i]);
+        }
     }
 
     // ── ← USER exit button on DEV and EXEC screens ───────────────────────────
@@ -736,6 +745,7 @@ static void on_flora(const char *json, int len)
     float fertility = cJSON_IsNumber(cJSON_GetObjectItem(root, "fertility")) ? (float)cJSON_GetObjectItem(root, "fertility")->valuedouble : NAN;
     float battery   = cJSON_IsNumber(cJSON_GetObjectItem(root, "battery"))   ? (float)cJSON_GetObjectItem(root, "battery")->valuedouble   : NAN;
     cJSON_Delete(root);
+
 
     if (bsp_display_lock(0)) {
         ui_user_update_hhcc(temp, moisture, light, fertility, battery);
