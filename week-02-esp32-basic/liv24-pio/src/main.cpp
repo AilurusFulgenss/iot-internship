@@ -22,6 +22,10 @@
 #include "history.h"
 #include "ui_alert.h"
 #include "ui_home.h"
+#include "ui_booking.h"
+#include "ui_room_list.h"
+#include "ui_room_detail.h"
+#include "ui_book_confirm.h"
 #include "sensor_config.h"
 #include "cJSON.h"
 #include <math.h>
@@ -624,6 +628,10 @@ void on_short_press(void)
         // EXEC mode — short press does nothing
     } else if (active == scr_home) {
         // Home has no nav button — do nothing
+    } else if (active == scr_booking || active == scr_room_list ||
+               active == scr_room_detail || active == scr_book_confirm) {
+        lv_scr_load_anim(scr_home, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 300, 0, false);
+        ESP_LOGI(TAG, "-> Home");
     } else if (active == scr_user) {
         lv_scr_load_anim(scr_pm, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
         ESP_LOGI(TAG, "-> PM History");
@@ -878,10 +886,53 @@ extern "C" void app_main(void)
     ui_exec_create();
     ui_exec_detail_create();
     ui_home_create();
+    ui_booking_create();
+    ui_room_list_create();
+    ui_room_detail_create();
+    ui_book_confirm_create();
     touch_nav_init();
     ui_alert_init();
     ui_home_set_card1_cb([]() {
         lv_scr_load_anim(scr_user, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
+    });
+    // Card 2 → Building Picker
+    ui_home_set_card2_cb([]() {
+        ui_booking_activate();
+        lv_scr_load_anim(scr_booking, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
+    });
+    // Building Picker navigation
+    ui_booking_set_back_cb([]() {
+        lv_scr_load_anim(scr_home, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 300, 0, false);
+    });
+    ui_booking_set_select_cb([](const char *bld_id) {
+        ui_room_list_activate(bld_id);
+        lv_scr_load_anim(scr_room_list, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
+    });
+    // Room List navigation
+    ui_room_list_set_back_cb([]() {
+        lv_scr_load_anim(scr_booking, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 300, 0, false);
+    });
+    ui_room_list_set_select_cb([](const char *room_id) {
+        ui_room_detail_activate(room_id);
+        lv_scr_load_anim(scr_room_detail, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
+    });
+    // Room Detail navigation
+    ui_room_detail_set_back_cb([]() {
+        lv_scr_load_anim(scr_room_list, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 300, 0, false);
+    });
+    ui_room_detail_set_slot_cb([](const char *room_id, const char *room_name,
+                                   const char *start, const char *end) {
+        ui_book_confirm_activate(room_id, room_name, start, end);
+        lv_scr_load_anim(scr_book_confirm, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
+    });
+    // Booking Confirm navigation
+    ui_book_confirm_set_back_cb([]() {
+        lv_scr_load_anim(scr_room_detail, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 300, 0, false);
+    });
+    ui_book_confirm_set_done_cb([]() {
+        // After successful booking, refresh room detail then go back to it
+        ui_room_detail_activate(nullptr);   // re-fetch same room
+        lv_scr_load_anim(scr_room_detail, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 300, 0, false);
     });
     lv_scr_load(scr[0]);     // show logo splash — inside the same lock block
     bsp_display_unlock();

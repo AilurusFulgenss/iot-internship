@@ -21,8 +21,57 @@ static lv_obj_t *lbl_pm25_h   = NULL;
 static lv_obj_t *lbl_temp_h   = NULL;
 static lv_obj_t *lbl_hum_h    = NULL;
 
+// Room status card — configure per device
+#define ROOM_STATUS_ID   "M-MTG1"
+#define ROOM_STATUS_NAME "Meeting Room 1"
+#define HA_BASE_URL      "http://192.168.1.111:8123"
+#define HA_CALENDAR_ID   "calendar.meeting_room_1"
+#define HA_TOKEN         "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiI0YTg1NTFiNTcwZWM0NmQ3OWE3YmVlMDYyYjg5YmU2ZSIsImlhdCI6MTc4MzM5MjMyMSwiZXhwIjoyMDk4NzUyMzIxfQ.TgtuxlkOBuvaDkN_dGVD83ehKfWDpfbJ0iVugpBPOIY"
+#define RS_BUF           4096
+
+static lv_obj_t *s_rs_status_lbl    = NULL;
+static lv_obj_t *s_rs_topic_lbl     = NULL;
+static lv_obj_t *s_rs_organizer_lbl = NULL;
+static lv_obj_t *s_rs_next_lbl      = NULL;
+static lv_obj_t *s_rs_nexttitle_lbl = NULL;
+
+static lv_obj_t *s_emoji_face = NULL;
+static lv_obj_t *s_emoji_eye1 = NULL;
+static lv_obj_t *s_emoji_eye2 = NULL;
+
 static void (*s_card1_cb)(void) = NULL;
+static void (*s_card2_cb)(void) = NULL;
 void ui_home_set_card1_cb(void (*cb)(void)) { s_card1_cb = cb; }
+void ui_home_set_card2_cb(void (*cb)(void)) { s_card2_cb = cb; }
+
+// ─── Emoji face ───────────────────────────────────────────────
+
+static void emoji_update(int hour)
+{
+    if (!s_emoji_face) return;
+    lv_color_t fc, ec;
+    if      (hour >= 5  && hour < 12) { fc = lv_color_hex(0xFFCC00); ec = lv_color_hex(0x443300); }
+    else if (hour >= 12 && hour < 17) { fc = lv_color_hex(0xFF8C00); ec = lv_color_hex(0x220000); }
+    else if (hour >= 17 && hour < 22) { fc = lv_color_hex(0xFF7755); ec = lv_color_hex(0x331111); }
+    else                              { fc = lv_color_hex(0x334488); ec = lv_color_hex(0xBBCCEE); }
+    lv_obj_set_style_bg_color(s_emoji_face, fc, 0);
+    lv_obj_set_style_bg_color(s_emoji_eye1, ec, 0);
+    lv_obj_set_style_bg_color(s_emoji_eye2, ec, 0);
+}
+
+// ─── Weather color ────────────────────────────────────────────
+
+static const char *weather_color_str(const char *cond)
+{
+    if (!cond || !cond[0]) return "556677";
+    if (strstr(cond, "Clear"))       return "FFD700";
+    if (strstr(cond, "Cloud"))       return "99AABB";
+    if (strstr(cond, "Rain"))        return "4488FF";
+    if (strstr(cond, "Drizzle"))     return "4488FF";
+    if (strstr(cond, "Thunder"))     return "FF8833";
+    if (strstr(cond, "Snow"))        return "BBDDFF";
+    return "889999";  // Mist/Fog/Haze/Smoke
+}
 
 // ─── Time ─────────────────────────────────────────────────────
 
@@ -47,6 +96,8 @@ static void clock_timer_cb(lv_timer_t *)
     snprintf(buf, sizeof(buf), "%s  %02d:%02d", days[t.tm_wday], t.tm_hour, t.tm_min);
     lv_label_set_text(lbl_clock, buf);
     lv_label_set_text(lbl_greeting, greeting_for(t.tm_hour));
+    lv_obj_align_to(s_emoji_face, lbl_greeting, LV_ALIGN_OUT_RIGHT_MID, 14, 0);
+    emoji_update(t.tm_hour);
 }
 
 // ─── Weather ──────────────────────────────────────────────────
@@ -106,11 +157,13 @@ static void weather_task(void *)
                     if (cJSON_IsString(mj)) cond = mj->valuestring;
                 }
 
-                char wbuf[48];
+                char wbuf[64];
                 if (!isnan(temp))
-                    snprintf(wbuf, sizeof(wbuf), "Bangkok  %.0f\xC2\xB0""C  %s", temp, cond);
+                    snprintf(wbuf, sizeof(wbuf), "Bangkok  %.0f\xC2\xB0""C   #%s %s#",
+                             temp, weather_color_str(cond), cond);
                 else
-                    snprintf(wbuf, sizeof(wbuf), "Bangkok  --  %s", cond);
+                    snprintf(wbuf, sizeof(wbuf), "Bangkok  --   #%s %s#",
+                             weather_color_str(cond), cond);
 
                 if (bsp_display_lock(0)) {
                     lv_label_set_text(lbl_weather, wbuf);
@@ -124,6 +177,183 @@ static void weather_task(void *)
         }
 
         vTaskDelay(pdMS_TO_TICKS(588000)); // ~10 min until next fetch
+    }
+}
+
+// ─── Room status fetch ────────────────────────────────────────
+
+static char s_rs_buf[RS_BUF];
+static int  s_rs_len = 0;
+
+static esp_err_t rs_http_cb(esp_http_client_event_t *evt)
+{
+    if (evt->event_id == HTTP_EVENT_ON_DATA && evt->data_len > 0) {
+        int rem = RS_BUF - s_rs_len - 1;
+        if (rem > 0) {
+            int n = evt->data_len < rem ? evt->data_len : rem;
+            memcpy(s_rs_buf + s_rs_len, evt->data, n);
+            s_rs_len += n;
+        }
+    }
+    return ESP_OK;
+}
+
+static void room_status_task(void *)
+{
+    ESP_LOGI(TAG, "room_status_task started — waiting 15s for NTP");
+    vTaskDelay(pdMS_TO_TICKS(15000)); // wait for network + NTP
+    for (;;) {
+        time_t now_t;
+        struct tm t;
+        time(&now_t);
+        localtime_r(&now_t, &t);
+
+        if (t.tm_year < 100) { // NTP not ready yet
+            ESP_LOGW(TAG, "NTP not ready (year=%d), retry in 5s", t.tm_year + 1900);
+            vTaskDelay(pdMS_TO_TICKS(5000));
+            continue;
+        }
+
+        // Build HA Calendar API URL with today's date range
+        char date[11];
+        strftime(date, sizeof(date), "%Y-%m-%d", &t);
+        char url[256];
+        snprintf(url, sizeof(url),
+            HA_BASE_URL "/api/calendars/" HA_CALENDAR_ID
+            "?start=%sT00:00:00%%2B07:00&end=%sT23:59:59%%2B07:00",
+            date, date);
+
+        s_rs_len = 0; memset(s_rs_buf, 0, RS_BUF);
+        esp_http_client_config_t cfg = {};
+        cfg.url           = url;
+        cfg.event_handler = rs_http_cb;
+        cfg.timeout_ms    = 8000;
+
+        ESP_LOGI(TAG, "Fetching calendar: %s", url);
+        esp_http_client_handle_t c = esp_http_client_init(&cfg);
+        esp_http_client_set_header(c, "Authorization", "Bearer " HA_TOKEN);
+        esp_err_t err = esp_http_client_perform(c);
+        int http_status = esp_http_client_get_status_code(c);
+        esp_http_client_cleanup(c);
+
+        ESP_LOGI(TAG, "Calendar HTTP %d len=%d err=%s", http_status, s_rs_len, esp_err_to_name(err));
+
+        if (err == ESP_OK && s_rs_len > 0) {
+            s_rs_buf[s_rs_len] = '\0';
+            cJSON *root = cJSON_Parse(s_rs_buf);
+            if (root && cJSON_IsArray(root)) {
+                int now_min = t.tm_hour * 60 + t.tm_min;
+
+                bool booked        = false;
+                char topic[64]     = "";
+                char organizer[64] = "";
+                char cur_time[32]  = "";
+                char next_time[32] = "";
+                bool found_next    = false;
+
+                cJSON *ev;
+                cJSON_ArrayForEach(ev, root) {
+                    cJSON *s_obj = cJSON_GetObjectItem(ev, "start");
+                    cJSON *e_obj = cJSON_GetObjectItem(ev, "end");
+                    cJSON *summ  = cJSON_GetObjectItem(ev, "summary");
+                    cJSON *desc  = cJSON_GetObjectItem(ev, "description");
+                    if (!cJSON_IsObject(s_obj) || !cJSON_IsObject(e_obj)) continue;
+
+                    cJSON *s_dt = cJSON_GetObjectItem(s_obj, "dateTime");
+                    cJSON *e_dt = cJSON_GetObjectItem(e_obj, "dateTime");
+                    if (!cJSON_IsString(s_dt) || !cJSON_IsString(e_dt)) continue;
+
+                    // Parse HH:MM from "2026-07-07T14:00:00+07:00"
+                    const char *s_t_ptr = strchr(s_dt->valuestring, 'T');
+                    const char *e_t_ptr = strchr(e_dt->valuestring, 'T');
+                    if (!s_t_ptr || !e_t_ptr) continue;
+
+                    int sh = atoi(s_t_ptr + 1), sm = atoi(s_t_ptr + 4);
+                    int eh = atoi(e_t_ptr + 1), em = atoi(e_t_ptr + 4);
+                    int start_min = sh * 60 + sm;
+                    int end_min   = eh * 60 + em;
+
+                    if (start_min <= now_min && now_min < end_min) {
+                        // Current booking
+                        booked = true;
+                        snprintf(cur_time, sizeof(cur_time), "%02d:%02d-%02d:%02d",
+                                 sh, sm, eh, em);
+                        if (cJSON_IsString(summ))
+                            snprintf(topic, sizeof(topic), "%s", summ->valuestring);
+                        if (cJSON_IsString(desc) && desc->valuestring[0])
+                            snprintf(organizer, sizeof(organizer), "%s", desc->valuestring);
+                    } else if (start_min > now_min && !found_next) {
+                        // Next upcoming booking (earliest after now)
+                        snprintf(next_time, sizeof(next_time), "%02d:%02d-%02d:%02d",
+                                 sh, sm, eh, em);
+                        found_next = true;
+                    }
+                }
+                cJSON_Delete(root);
+
+                if (bsp_display_lock(0)) {
+                    if (booked && found_next) {
+                        // Case 4: Booked + has next — next time in header, BOOKED+time in body
+                        char next_hdr[48];
+                        snprintf(next_hdr, sizeof(next_hdr), "Next  %s", next_time);
+                        lv_label_set_text(s_rs_status_lbl, next_hdr);
+                        lv_obj_set_style_text_color(s_rs_status_lbl, lv_color_hex(0xFFCC44), 0);
+                        char booked_str[48];
+                        snprintf(booked_str, sizeof(booked_str), "BOOKED  %s", cur_time);
+                        lv_label_set_text(s_rs_topic_lbl, booked_str);
+                        lv_obj_set_style_text_color(s_rs_topic_lbl, lv_color_hex(0xFF4444), 0);
+                        lv_obj_set_style_text_font(s_rs_topic_lbl, &lv_font_montserrat_24, 0);
+                        lv_label_set_text(s_rs_organizer_lbl, topic);
+                        lv_obj_align(s_rs_organizer_lbl, LV_ALIGN_TOP_LEFT, 0, 112);
+                        lv_label_set_text(s_rs_nexttitle_lbl, "");
+                        lv_label_set_text(s_rs_next_lbl, "");
+                    } else if (booked && !found_next) {
+                        // Case 3: Booked, no next — show current booking time below
+                        lv_label_set_text(s_rs_status_lbl, "BOOKED");
+                        lv_obj_set_style_text_color(s_rs_status_lbl, lv_color_hex(0xFF4444), 0);
+                        lv_label_set_text(s_rs_topic_lbl, topic);
+                        lv_obj_set_style_text_color(s_rs_topic_lbl, lv_color_hex(0xFFFFFF), 0);
+                        lv_obj_set_style_text_font(s_rs_topic_lbl, &lv_font_montserrat_24, 0);
+                        lv_label_set_text(s_rs_organizer_lbl, organizer);
+                        lv_obj_align(s_rs_organizer_lbl, LV_ALIGN_TOP_LEFT, 0, 112);
+                        lv_label_set_text(s_rs_nexttitle_lbl, "");
+                        lv_label_set_text(s_rs_next_lbl, cur_time);
+                        lv_obj_set_style_text_font(s_rs_next_lbl, &lv_font_montserrat_24, 0);
+                        lv_obj_set_style_text_color(s_rs_next_lbl, lv_color_hex(0xFF4444), 0);
+                    } else if (!booked && found_next) {
+                        // Case 2: Available + has next — next time in header
+                        char next_hdr[48];
+                        snprintf(next_hdr, sizeof(next_hdr), "Next  %s", next_time);
+                        lv_label_set_text(s_rs_status_lbl, next_hdr);
+                        lv_obj_set_style_text_color(s_rs_status_lbl, lv_color_hex(0xFFCC44), 0);
+                        lv_label_set_text(s_rs_topic_lbl, "AVAILABLE");
+                        lv_obj_set_style_text_color(s_rs_topic_lbl, lv_color_hex(0x00CC66), 0);
+                        lv_obj_set_style_text_font(s_rs_topic_lbl, &lv_font_montserrat_24, 0);
+                        lv_label_set_text(s_rs_organizer_lbl, "");
+                        lv_label_set_text(s_rs_nexttitle_lbl, "");
+                        lv_label_set_text(s_rs_next_lbl, "");
+                    } else {
+                        // Case 1: Available, no next event
+                        lv_label_set_text(s_rs_status_lbl, "");
+                        lv_label_set_text(s_rs_topic_lbl, "AVAILABLE");
+                        lv_obj_set_style_text_color(s_rs_topic_lbl, lv_color_hex(0x00CC66), 0);
+                        lv_obj_set_style_text_font(s_rs_topic_lbl, &lv_font_montserrat_24, 0);
+                        lv_label_set_text(s_rs_organizer_lbl, "");
+                        lv_label_set_text(s_rs_nexttitle_lbl, "");
+                        lv_label_set_text(s_rs_next_lbl, "");
+                    }
+                    bsp_display_unlock();
+                }
+                ESP_LOGI(TAG, "Room %s: %s | next: %s", ROOM_STATUS_ID,
+                         booked ? "BOOKED" : "AVAILABLE", next_time);
+            } else {
+                ESP_LOGW(TAG, "Response not array: %.200s", s_rs_buf);
+            }
+        } else {
+            ESP_LOGW(TAG, "HA calendar fetch failed: %s", esp_err_to_name(err));
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(30000)); // refresh every 30s
     }
 }
 
@@ -185,9 +415,40 @@ void ui_home_create(void)
 
     lbl_weather = lv_label_create(scr_home);
     lv_label_set_text(lbl_weather, "Bangkok  --\xC2\xB0""C");
+    lv_label_set_recolor(lbl_weather, true);
     lv_obj_set_style_text_color(lbl_weather, lv_color_hex(0x445566), 0);
     lv_obj_set_style_text_font(lbl_weather, &lv_font_montserrat_24, 0);
     lv_obj_align(lbl_weather, LV_ALIGN_TOP_LEFT, 28, 158);
+
+    // ── Emoji face (right side of greeting row) ───────────────
+    s_emoji_face = lv_obj_create(scr_home);
+    lv_obj_set_size(s_emoji_face, 52, 52);
+    lv_obj_align_to(s_emoji_face, lbl_greeting, LV_ALIGN_OUT_RIGHT_MID, 14, 0);
+    lv_obj_set_style_bg_color(s_emoji_face, lv_color_hex(0xFFCC00), 0);
+    lv_obj_set_style_bg_opa(s_emoji_face, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(s_emoji_face, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(s_emoji_face, 0, 0);
+    lv_obj_set_style_pad_all(s_emoji_face, 0, 0);
+    lv_obj_clear_flag(s_emoji_face, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(s_emoji_face, LV_OBJ_FLAG_CLICKABLE);
+
+    s_emoji_eye1 = lv_obj_create(s_emoji_face);
+    lv_obj_set_size(s_emoji_eye1, 9, 9);
+    lv_obj_set_pos(s_emoji_eye1, 10, 16);
+    lv_obj_set_style_bg_color(s_emoji_eye1, lv_color_hex(0x443300), 0);
+    lv_obj_set_style_radius(s_emoji_eye1, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(s_emoji_eye1, 0, 0);
+    lv_obj_clear_flag(s_emoji_eye1, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(s_emoji_eye1, LV_OBJ_FLAG_CLICKABLE);
+
+    s_emoji_eye2 = lv_obj_create(s_emoji_face);
+    lv_obj_set_size(s_emoji_eye2, 9, 9);
+    lv_obj_set_pos(s_emoji_eye2, 33, 16);
+    lv_obj_set_style_bg_color(s_emoji_eye2, lv_color_hex(0x443300), 0);
+    lv_obj_set_style_radius(s_emoji_eye2, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(s_emoji_eye2, 0, 0);
+    lv_obj_clear_flag(s_emoji_eye2, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(s_emoji_eye2, LV_OBJ_FLAG_CLICKABLE);
 
     // ── Card 1: Air Quality ───────────────────────────────────
     lv_obj_t *card1 = lv_obj_create(scr_home);
@@ -241,7 +502,7 @@ void ui_home_create(void)
     lv_obj_set_style_text_font(lbl_hum_h, &lv_font_montserrat_32, 0);
     lv_obj_align(lbl_hum_h, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
 
-    // ── Card 2: Room Booking ──────────────────────────────────
+    // ── Card 2: Room Status (display-only, no tap) ────────────
     lv_obj_t *card2 = lv_obj_create(scr_home);
     lv_obj_set_size(card2, 664, 176);
     lv_obj_align(card2, LV_ALIGN_TOP_MID, 0, 456);
@@ -252,27 +513,68 @@ void ui_home_create(void)
     lv_obj_set_style_border_width(card2, 1, 0);
     lv_obj_set_style_pad_all(card2, 20, 0);
     lv_obj_clear_flag(card2, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(card2, LV_OBJ_FLAG_CLICKABLE);
 
-    lv_obj_t *c2_title = lv_label_create(card2);
-    lv_label_set_text(c2_title, "ROOM BOOKING");
-    lv_obj_set_style_text_color(c2_title, lv_color_hex(0x445566), 0);
-    lv_obj_set_style_text_font(c2_title, &lv_font_montserrat_14, 0);
-    lv_obj_align(c2_title, LV_ALIGN_TOP_LEFT, 0, 0);
+    // Row 1: Room name (left) + status badge (right)
+    lv_obj_t *c2_name = lv_label_create(card2);
+    lv_label_set_text(c2_name, ROOM_STATUS_NAME);
+    lv_obj_set_style_text_color(c2_name, lv_color_hex(0x00E5FF), 0);
+    lv_obj_set_style_text_font(c2_name, &lv_font_montserrat_24, 0);
+    lv_obj_align(c2_name, LV_ALIGN_TOP_LEFT, 0, 14);
 
-    lv_obj_t *c2_soon = lv_label_create(card2);
-    lv_label_set_text(c2_soon, "COMING SOON");
-    lv_obj_set_style_text_color(c2_soon, lv_color_hex(0x2A3A4A), 0);
-    lv_obj_set_style_text_font(c2_soon, &lv_font_montserrat_32, 0);
-    lv_obj_align(c2_soon, LV_ALIGN_CENTER, 0, 8);
+    s_rs_status_lbl = lv_label_create(card2);
+    lv_label_set_text(s_rs_status_lbl, "");
+    lv_obj_set_style_text_color(s_rs_status_lbl, lv_color_hex(0x445566), 0);
+    lv_obj_set_style_text_font(s_rs_status_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_align(s_rs_status_lbl, LV_ALIGN_TOP_RIGHT, 0, 20);
+
+    // Separator
+    lv_obj_t *c2_sep = lv_obj_create(card2);
+    lv_obj_set_size(c2_sep, LV_PCT(100), 1);
+    lv_obj_align(c2_sep, LV_ALIGN_TOP_LEFT, 0, 54);
+    lv_obj_set_style_bg_color(c2_sep, lv_color_hex(0x1C2C3C), 0);
+    lv_obj_set_style_border_width(c2_sep, 0, 0);
+    lv_obj_set_style_pad_all(c2_sep, 0, 0);
+    lv_obj_clear_flag(c2_sep, LV_OBJ_FLAG_CLICKABLE);
+
+    // Row 2 left: topic (or "AVAILABLE" when free) — y=80 centers font-24 between sep and card bottom
+    s_rs_topic_lbl = lv_label_create(card2);
+    lv_label_set_text(s_rs_topic_lbl, "");
+    lv_obj_set_style_text_color(s_rs_topic_lbl, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(s_rs_topic_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_align(s_rs_topic_lbl, LV_ALIGN_TOP_LEFT, 0, 80);
+
+    // Row 2 right: next booking time
+    s_rs_next_lbl = lv_label_create(card2);
+    lv_label_set_text(s_rs_next_lbl, "");
+    lv_obj_set_style_text_color(s_rs_next_lbl, lv_color_hex(0x00CC66), 0);
+    lv_obj_set_style_text_font(s_rs_next_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_align(s_rs_next_lbl, LV_ALIGN_TOP_RIGHT, 0, 80);
+
+    // Row 3 left: organizer
+    s_rs_organizer_lbl = lv_label_create(card2);
+    lv_label_set_text(s_rs_organizer_lbl, "");
+    lv_obj_set_style_text_color(s_rs_organizer_lbl, lv_color_hex(0x445566), 0);
+    lv_obj_set_style_text_font(s_rs_organizer_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_align(s_rs_organizer_lbl, LV_ALIGN_TOP_LEFT, 0, 104);
+
+    // Row 3 right: unused (next title skipped — may be Thai)
+    s_rs_nexttitle_lbl = lv_label_create(card2);
+    lv_label_set_text(s_rs_nexttitle_lbl, "");
+    lv_obj_set_style_text_font(s_rs_nexttitle_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_align(s_rs_nexttitle_lbl, LV_ALIGN_TOP_RIGHT, 0, 96);
 
     // Set Bangkok timezone — SNTP itself is started by wifi_mqtt when IP arrives
     setenv("TZ", "ICT-7", 1);
     tzset();
 
+    emoji_update(8); // default morning state; clock_timer_cb will correct once NTP syncs
+
     // ── LVGL timer: update clock every 30s ────────────────────
     lv_timer_create(clock_timer_cb, 30000, NULL);
 
-    xTaskCreate(weather_task, "weather", 8192, NULL, 2, NULL);
+    xTaskCreate(weather_task,     "weather",  8192, NULL, 2, NULL);
+    xTaskCreate(room_status_task, "room_st",  6144, NULL, 2, NULL);
 }
 
 // ─── Sensor update (called from sensor task under bsp_display_lock) ──
