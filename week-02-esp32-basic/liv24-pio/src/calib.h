@@ -12,14 +12,6 @@ typedef struct {
     sensor_calib_t sound;
     sensor_calib_t pm25;
     sensor_calib_t pm10;
-    // CWT-TH04S
-    sensor_calib_t th_temp;
-    sensor_calib_t th_hum;
-    // CWT-EC/TDS
-    sensor_calib_t ec;
-    // BH-485-ORP
-    sensor_calib_t orp;
-    sensor_calib_t orp_temp;
 } calib_data_t;
 
 extern calib_data_t g_calib;

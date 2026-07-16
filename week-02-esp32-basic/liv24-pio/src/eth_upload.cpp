@@ -1,6 +1,7 @@
 #include "eth_upload.h"
 #include "sensor_config.h"
 #include "esp_log.h"
+#include "nvs.h"
 #include "esp_netif.h"
 #include "esp_eth.h"
 #include "esp_eth_mac_esp.h"
@@ -10,6 +11,8 @@
 #include "esp_http_client.h"
 #include "esp_spiffs.h"
 #include "esp_system.h"
+#include "esp_random.h"
+#include "esp_timer.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -22,6 +25,18 @@
 
 static const char *TAG = "ETH_UPLOAD";
 static bool s_has_logo = false;
+static char s_gw_str[16] = "";  // filled by eth_start_background(); "" = DHCP
+
+#define WEB_PASSWORD       "999999"
+#define SESSION_LIFETIME_S (12 * 3600)
+static char    s_sess_token[33]  = {};   // 32 hex chars + null; empty = no session
+static int64_t s_sess_expiry_us  = 0;   // esp_timer_get_time() at expiry
+
+void eth_get_net_gw(char *out, size_t len)
+{
+    strncpy(out, s_gw_str, len);
+    out[len - 1] = '\0';
+}
 static lv_obj_t *s_ip_label = NULL;
 static lv_obj_t *s_qr_obj   = NULL;
 static esp_eth_handle_t s_eth_handle = NULL;
@@ -73,7 +88,68 @@ void eth_upload_clear_logo(void)
     ESP_LOGW(TAG, "Logo cleared from SPIFFS");
 }
 
+// ── Session helpers ───────────────────────────────────────────────────────────
+
+static void gen_session(void)
+{
+    for (int i = 0; i < 4; i++) {
+        uint32_t r = esp_random();
+        snprintf(s_sess_token + i * 8, 9, "%08x", (unsigned)r);
+    }
+    s_sess_expiry_us = esp_timer_get_time()
+                       + (int64_t)SESSION_LIFETIME_S * 1000000LL;
+    ESP_LOGI(TAG, "Session created, expires in %d h", SESSION_LIFETIME_S / 3600);
+}
+
+static bool is_authenticated(httpd_req_t *req)
+{
+    if (s_sess_token[0] == '\0' || esp_timer_get_time() > s_sess_expiry_us)
+        return false;
+    char cookie[128] = {};
+    size_t clen = httpd_req_get_hdr_value_len(req, "Cookie");
+    if (clen == 0 || clen >= sizeof(cookie)) return false;
+    if (httpd_req_get_hdr_value_str(req, "Cookie", cookie, sizeof(cookie)) != ESP_OK)
+        return false;
+    char *p = strstr(cookie, "sess=");
+    return (p && strncmp(p + 5, s_sess_token, 32) == 0);
+}
+
+static esp_err_t redirect_to_login(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "/login");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+}
+
 // ── HTTP handlers ─────────────────────────────────────────────────────────────
+
+static const char HTML_LOGIN[] =
+"<!DOCTYPE html><html lang='en'><head>"
+"<meta charset='utf-8'>"
+"<meta name='viewport' content='width=device-width,initial-scale=1'>"
+"<title>LIV24 Login</title><style>"
+"body{background:#0a0a12;color:#eee;font-family:sans-serif;"
+"max-width:320px;margin:80px auto;padding:20px;text-align:center}"
+"h2{color:#00e5ff;margin:0 0 16px}"
+"input{width:100%;padding:14px;background:#111;color:#eee;"
+"border:1px solid #334455;border-radius:8px;font-size:22px;"
+"letter-spacing:8px;text-align:center;box-sizing:border-box;margin:8px 0}"
+"button{padding:14px 0;background:#00e5ff;color:#111;border:none;"
+"border-radius:10px;font-size:16px;font-weight:bold;cursor:pointer;"
+"width:100%;margin-top:8px}"
+"#err{color:#ff4444;font-size:14px;margin-top:12px;min-height:20px}"
+"</style></head><body>"
+"<h2>LIV24 Setup</h2>"
+"<p style='color:#556677'>Enter password to continue</p>"
+"<form method='POST' action='/login'>"
+"<input type='password' name='pass' maxlength='16' autofocus>"
+"<button type='submit'>Unlock</button>"
+"</form>"
+"<div id='err'></div>"
+"<script>if(location.search.indexOf('e=1')>=0)"
+"document.getElementById('err').textContent='Incorrect password';</script>"
+"</body></html>";
 
 static const char HTML[] =
 "<!DOCTYPE html>"
@@ -215,8 +291,49 @@ static const char HTML[] =
 "</body>"
 "</html>";
 
+static esp_err_t get_login_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/html");
+    return httpd_resp_sendstr(req, HTML_LOGIN);
+}
+
+static esp_err_t post_login_handler(httpd_req_t *req)
+{
+    char body[64] = {};
+    int len = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (len > 0) body[len] = '\0';
+
+    char pass[32] = {};
+    char *p = strstr(body, "pass=");
+    if (p) {
+        strncpy(pass, p + 5, sizeof(pass) - 1);
+        char *end = strchr(pass, '&');
+        if (end) *end = '\0';
+    }
+
+    if (strcmp(pass, WEB_PASSWORD) == 0) {
+        gen_session();
+        char cookie[96];
+        snprintf(cookie, sizeof(cookie),
+                 "sess=%s; Max-Age=%d; Path=/; HttpOnly",
+                 s_sess_token, SESSION_LIFETIME_S);
+        httpd_resp_set_status(req, "302 Found");
+        httpd_resp_set_hdr(req, "Set-Cookie", cookie);
+        httpd_resp_set_hdr(req, "Location", "/");
+        httpd_resp_send(req, NULL, 0);
+        ESP_LOGI(TAG, "Web login OK");
+    } else {
+        ESP_LOGW(TAG, "Web login failed (wrong password)");
+        httpd_resp_set_status(req, "302 Found");
+        httpd_resp_set_hdr(req, "Location", "/login?e=1");
+        httpd_resp_send(req, NULL, 0);
+    }
+    return ESP_OK;
+}
+
 static esp_err_t get_root_handler(httpd_req_t *req)
 {
+    if (!is_authenticated(req)) return redirect_to_login(req);
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, HTML, HTTPD_RESP_USE_STRLEN);
 }
@@ -250,6 +367,7 @@ static esp_err_t save_to_path(httpd_req_t *req, const char *path)
 
 static esp_err_t post_upload_hd_handler(httpd_req_t *req)
 {
+    if (!is_authenticated(req)) return redirect_to_login(req);
     if (save_to_path(req, ETH_LOGO_HD_SPIFFS) != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "HD upload failed");
         return ESP_FAIL;
@@ -261,6 +379,7 @@ static esp_err_t post_upload_hd_handler(httpd_req_t *req)
 
 static esp_err_t post_upload_handler(httpd_req_t *req)
 {
+    if (!is_authenticated(req)) return redirect_to_login(req);
     const size_t MAX_SIZE = 512 * 1024;
 
     if (req->content_len == 0) {
@@ -312,6 +431,7 @@ static esp_err_t post_upload_handler(httpd_req_t *req)
 
 static esp_err_t get_sensor_test_handler(httpd_req_t *req)
 {
+    if (!is_authenticated(req)) return redirect_to_login(req);
     sensor_config_t      cfg = sensor_config_get();
     const sensor_model_t *m  = &SENSOR_MODELS[cfg.model_idx];
     sensor_last_raw_t    raw = sensor_get_raw();
@@ -380,6 +500,7 @@ static esp_err_t get_sensor_test_handler(httpd_req_t *req)
 
 static esp_err_t get_sensor_info_handler(httpd_req_t *req)
 {
+    if (!is_authenticated(req)) return redirect_to_login(req);
     sensor_config_t cfg = sensor_config_get();
     char json[64];
     snprintf(json, sizeof(json), "{\"model\":%d,\"slave\":%d}",
@@ -390,6 +511,7 @@ static esp_err_t get_sensor_info_handler(httpd_req_t *req)
 
 static esp_err_t post_sensor_cfg_handler(httpd_req_t *req)
 {
+    if (!is_authenticated(req)) return redirect_to_login(req);
     char body[64] = {};
     int len = httpd_req_recv(req, body, sizeof(body) - 1);
     if (len <= 0) {
@@ -482,6 +604,39 @@ static void eth_hw_start(esp_netif_t *eth_netif)
     ESP_ERROR_CHECK(esp_eth_start(s_eth_handle));
 }
 
+// ── HTTP config server (shared by background and upload-mode) ────────────────
+
+static void start_http_server(void)
+{
+    httpd_handle_t server = NULL;
+    httpd_config_t http_cfg = HTTPD_DEFAULT_CONFIG();
+    http_cfg.stack_size       = 8192;
+    http_cfg.max_uri_handlers = 10;
+
+    if (httpd_start(&server, &http_cfg) != ESP_OK) {
+        ESP_LOGE(TAG, "HTTP server start failed");
+        return;
+    }
+
+    httpd_uri_t uri_login_get   = { "/login",       HTTP_GET,  get_login_handler,       NULL };
+    httpd_uri_t uri_login_post  = { "/login",       HTTP_POST, post_login_handler,      NULL };
+    httpd_uri_t uri_root        = { "/",            HTTP_GET,  get_root_handler,        NULL };
+    httpd_uri_t uri_upload      = { "/upload",      HTTP_POST, post_upload_handler,     NULL };
+    httpd_uri_t uri_upload_hd   = { "/upload_hd",   HTTP_POST, post_upload_hd_handler,  NULL };
+    httpd_uri_t uri_sensor_info = { "/sensor_info", HTTP_GET,  get_sensor_info_handler, NULL };
+    httpd_uri_t uri_sensor_cfg  = { "/sensor_cfg",  HTTP_POST, post_sensor_cfg_handler, NULL };
+    httpd_uri_t uri_sensor_test = { "/sensor_test", HTTP_GET,  get_sensor_test_handler, NULL };
+    httpd_register_uri_handler(server, &uri_login_get);
+    httpd_register_uri_handler(server, &uri_login_post);
+    httpd_register_uri_handler(server, &uri_root);
+    httpd_register_uri_handler(server, &uri_upload);
+    httpd_register_uri_handler(server, &uri_upload_hd);
+    httpd_register_uri_handler(server, &uri_sensor_info);
+    httpd_register_uri_handler(server, &uri_sensor_cfg);
+    httpd_register_uri_handler(server, &uri_sensor_test);
+    ESP_LOGI(TAG, "HTTP server ready on port 80");
+}
+
 // ── Normal-mode Ethernet (MQTT background) ───────────────────────────────────
 
 bool eth_logo_fetch_from_url(const char *url)
@@ -536,31 +691,46 @@ void eth_start_background(void)
     esp_netif_config_t netif_cfg = ESP_NETIF_DEFAULT_ETH();
     esp_netif_t *eth_netif = esp_netif_new(&netif_cfg);
 
-#ifdef STATIC_IP_ADDR
-    // Stop DHCP and use static IP (set STATIC_IP_ADDR / STATIC_GW_ADDR /
-    // STATIC_MASK_ADDR in platformio.ini build_flags when DHCP doesn't work).
-    esp_netif_dhcpc_stop(eth_netif);   // ignore error if already stopped
-    esp_netif_ip_info_t ip_info = {};
-    ip4addr_aton(STATIC_IP_ADDR,   (ip4_addr_t *)&ip_info.ip);
-    ip4addr_aton(STATIC_GW_ADDR,   (ip4_addr_t *)&ip_info.gw);
-    ip4addr_aton(STATIC_MASK_ADDR, (ip4_addr_t *)&ip_info.netmask);
-    ESP_ERROR_CHECK(esp_netif_set_ip_info(eth_netif, &ip_info));
+    // Read network mode from NVS (written by DEV → Network tab)
+    {
+        char mode[8]     = "dhcp";
+        char ip_str[16]  = "";
+        char mask_str[16] = "";
+        nvs_handle_t h;
+        if (nvs_open("eth_cfg", NVS_READONLY, &h) == ESP_OK) {
+            size_t len;
+            len = sizeof(mode);      nvs_get_str(h, "mode", mode,      &len);
+            len = sizeof(ip_str);    nvs_get_str(h, "ip",   ip_str,    &len);
+            len = sizeof(mask_str);  nvs_get_str(h, "mask", mask_str,  &len);
+            nvs_close(h);
+        }
 
-    ESP_LOGI(TAG, "Static IP: " IPSTR "  mask " IPSTR "  gw " IPSTR,
-             IP2STR(&ip_info.ip), IP2STR(&ip_info.netmask), IP2STR(&ip_info.gw));
-    // DNS is configured in wifi_mqtt eth_got_ip_handler after link-up
-#endif
+        if (strcmp(mode, "static") == 0 && ip_str[0]) {
+            // Derive gateway: same first 3 octets, last octet = 1
+            uint8_t o[4] = {192, 168, 1, 1};
+            sscanf(ip_str, "%hhu.%hhu.%hhu.%hhu", &o[0], &o[1], &o[2], &o[3]);
+            snprintf(s_gw_str, sizeof(s_gw_str), "%d.%d.%d.1", o[0], o[1], o[2]);
+
+            esp_netif_dhcpc_stop(eth_netif);
+            esp_netif_ip_info_t ip_info = {};
+            ip4addr_aton(ip_str,    (ip4_addr_t *)&ip_info.ip);
+            ip4addr_aton(mask_str[0] ? mask_str : "255.255.255.0",
+                         (ip4_addr_t *)&ip_info.netmask);
+            ip4addr_aton(s_gw_str,  (ip4_addr_t *)&ip_info.gw);
+            ESP_ERROR_CHECK(esp_netif_set_ip_info(eth_netif, &ip_info));
+            ESP_LOGI(TAG, "Static IP: %s  mask %s  gw %s", ip_str, mask_str, s_gw_str);
+        } else {
+            s_gw_str[0] = '\0';
+            ESP_LOGI(TAG, "Ethernet started — waiting for DHCP lease...");
+        }
+    }
 
     ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID,
                                                eth_event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP,
                                                eth_event_handler, NULL));
     eth_hw_start(eth_netif);
-#ifdef STATIC_IP_ADDR
-    ESP_LOGI(TAG, "Ethernet started — static IP configured.");
-#else
-    ESP_LOGI(TAG, "Ethernet started — waiting for DHCP lease...");
-#endif
+    start_http_server();
 }
 
 // ── Setup-mode Ethernet + HTTP upload server ──────────────────────────────────
@@ -582,31 +752,7 @@ void eth_upload_start(lv_obj_t *qr_obj, lv_obj_t *ip_label)
 
     ESP_LOGI(TAG, "Ethernet started — waiting for IP (DHCP)...");
 
-    // Start HTTP server immediately; accessible once IP assigned
-    httpd_handle_t server = NULL;
-    httpd_config_t http_cfg = HTTPD_DEFAULT_CONFIG();
-    http_cfg.stack_size       = 8192;
-    http_cfg.max_uri_handlers = 8;
-
-    if (httpd_start(&server, &http_cfg) != ESP_OK) {
-        ESP_LOGE(TAG, "HTTP server start failed");
-        return;
-    }
-
-    httpd_uri_t uri_root         = { "/",             HTTP_GET,  get_root_handler,          NULL };
-    httpd_uri_t uri_upload       = { "/upload",       HTTP_POST, post_upload_handler,       NULL };
-    httpd_uri_t uri_upload_hd    = { "/upload_hd",    HTTP_POST, post_upload_hd_handler,    NULL };
-    httpd_uri_t uri_sensor_info  = { "/sensor_info",  HTTP_GET,  get_sensor_info_handler,   NULL };
-    httpd_uri_t uri_sensor_cfg   = { "/sensor_cfg",   HTTP_POST, post_sensor_cfg_handler,   NULL };
-    httpd_uri_t uri_sensor_test  = { "/sensor_test",  HTTP_GET,  get_sensor_test_handler,   NULL };
-    httpd_register_uri_handler(server, &uri_root);
-    httpd_register_uri_handler(server, &uri_upload);
-    httpd_register_uri_handler(server, &uri_upload_hd);
-    httpd_register_uri_handler(server, &uri_sensor_info);
-    httpd_register_uri_handler(server, &uri_sensor_cfg);
-    httpd_register_uri_handler(server, &uri_sensor_test);
-
-    ESP_LOGI(TAG, "HTTP server ready — waiting for upload");
+    start_http_server();
 
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));

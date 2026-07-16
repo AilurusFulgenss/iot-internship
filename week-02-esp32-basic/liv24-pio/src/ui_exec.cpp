@@ -21,18 +21,6 @@ static status_t st_pm25(float v) {
     if (v<=55.4f)      return {"SENS", 0xFF6D00u};
     return                    {"HIGH", 0xCC0033u};
 }
-static status_t st_ec(float v) {
-    if (isnan(v)||v<0) return {"--",   0x2A3A4Au};
-    if (v<=300)        return {"GOOD", 0x00C853u};
-    if (v<=500)        return {"WARN", 0xFFD600u};
-    return                    {"HIGH", 0xCC0033u};
-}
-static status_t st_orp(float v) {
-    if (isnan(v))  return {"--",   0x2A3A4Au};
-    if (v<200)     return {"LOW",  0xFF6D00u};
-    if (v<=400)    return {"GOOD", 0x00C853u};
-    return               {"HIGH", 0xFF6D00u};
-}
 static status_t st_temp(float v) {
     if (isnan(v))  return {"--",   0x2A3A4Au};
     if (v<18)      return {"COLD", 0x1565C0u};
@@ -40,56 +28,23 @@ static status_t st_temp(float v) {
     if (v<35)      return {"WARM", 0xFFD600u};
     return               {"HOT",  0xCC0033u};
 }
-static status_t st_moist(float v) {
-    if (isnan(v)||v<0) return {"--",  0x2A3A4Au};
-    if (v<20)          return {"DRY", 0xFF6D00u};
-    if (v<=70)         return {"OK",  0x00C853u};
-    return                    {"WET", 0x1565C0u};
-}
-
 // ── Card geometry ─────────────────────────────────────────────────────────────
 // Screen 720×720 | header 72px | outer pad 16px
-// 2 cols × 3 rows  |  card 338×197  |  gap 12px
-//
-// col0 x=16   col1 x=366
-// row0 y=88   row1 y=297   row2 y=506
+// Single full-width card
 
-#define CARD_W   338
-#define CARD_H   197
+#define CARD_W   688
+#define CARD_H   220
 #define CARD_PAD  16
 
-// Card indices: 0=PM  1=HHCC  2=EC  3=ORP  4=LEAK  5=TH
+static lv_obj_t *s_card[1]     = {};
+static lv_obj_t *s_lbl_stat[1] = {};
+static lv_obj_t *s_lbl_prim[1] = {};
+static lv_obj_t *s_lbl_unit[1] = {};
+static lv_obj_t *s_lbl_sec[1]  = {};
 
-static lv_obj_t *s_card[6]     = {};
-static lv_obj_t *s_lbl_stat[6] = {};
-static lv_obj_t *s_lbl_prim[6] = {};
-static lv_obj_t *s_lbl_unit[6] = {};
-static lv_obj_t *s_lbl_sec[6]  = {};
-
-static const uint32_t ACCENT[6] = {
-    0x00E5FFu,  // PM   — cyan
-    0x44FF88u,  // HHCC — green
-    0x00C4FFu,  // EC   — sky blue
-    0xFFAA44u,  // ORP  — amber
-    0x44FF88u,  // LEAK — green (changes red on alarm)
-    0x44FFE0u,  // TH   — teal
-};
-static const char *CARD_TITLE[6] = {
-    "PM2.5 - SN-300",
-    "HHCC Flora",
-    "EC / TDS",
-    "ORP Sensor",
-    "Leak Detector",
-    "TH - CWT-TH04S",
-};
-static const char *CARD_UNIT[6] = {
-    "ug/m3",
-    "% moisture",
-    "uS/cm",
-    "mV",
-    "",
-    "\xc2\xb0""C",
-};
+static const uint32_t ACCENT[1] = { 0x00E5FFu };  // PM — cyan
+static const char *CARD_TITLE[1] = { "PM2.5 - SN-300" };
+static const char *CARD_UNIT[1]  = { "ug/m3" };
 
 // ── Card factory ──────────────────────────────────────────────────────────────
 
@@ -204,19 +159,8 @@ void ui_exec_create(void)
 
     // <- USER button added by touch_nav_init at TOP_RIGHT,-8,12 (88×40px)
 
-    // ── 6 sensor cards: 2 cols × 3 rows ──────────────────────────────────────
-    //   col0 x=16    col1 x=366
-    //   row0 y=88    row1 y=297    row2 y=506
-    make_exec_card(0,  16,  88);   // PM2.5  (SN-300)
-    make_exec_card(1, 366,  88);   // HHCC Flora
-    make_exec_card(2,  16, 297);   // EC / TDS
-    make_exec_card(3, 366, 297);   // ORP
-    make_exec_card(4,  16, 506);   // Leak Detector
-    make_exec_card(5, 366, 506);   // TH (CWT-TH04S)
-
-    // LEAK card: use font_32 + centre for status text (no numeric value)
-    lv_obj_set_style_text_font(s_lbl_prim[4], &lv_font_montserrat_32, 0);
-    lv_obj_align(s_lbl_prim[4], LV_ALIGN_CENTER, 0, 8);
+    // ── Single PM card, full-width ────────────────────────────────────────────
+    make_exec_card(0, 16, 88);
 
     ESP_LOGI(TAG, "EXEC created OK");
 }
@@ -250,80 +194,3 @@ void ui_exec_update_pm(float temp, float hum, float pm25, float pm10)
     }
 }
 
-void ui_exec_update_hhcc(float temp, float moisture, float light,
-                          float fertility, float battery)
-{
-    if (!scr_exec) return;
-    char buf[64];
-    if (!isnan(moisture) && moisture >= 0) {
-        snprintf(buf, sizeof(buf), "%.0f", moisture);
-        lv_label_set_text(s_lbl_prim[1], buf);
-        apply_status(1, st_moist(moisture));
-    }
-    snprintf(buf, sizeof(buf), "T:%.1f\xc2\xb0  Lux:%.0f  F:%.0f  Bat:%.0f%%",
-             isnan(temp)?0.f:temp, isnan(light)?0.f:light,
-             isnan(fertility)?0.f:fertility, isnan(battery)?0.f:battery);
-    lv_label_set_text(s_lbl_sec[1], buf);
-}
-
-void ui_exec_update_ec(float ec)
-{
-    if (!scr_exec) return;
-    char buf[32];
-    if (!isnan(ec) && ec >= 0) {
-        snprintf(buf, sizeof(buf), "%.0f", ec);
-        lv_label_set_text(s_lbl_prim[2], buf);
-        apply_status(2, st_ec(ec));
-        snprintf(buf, sizeof(buf), "TDS: %.0f mg/L", ec * 0.67f);
-        lv_label_set_text(s_lbl_sec[2], buf);
-    }
-}
-
-void ui_exec_update_orp(float orp, float temp)
-{
-    if (!scr_exec) return;
-    char buf[32];
-    if (!isnan(orp)) {
-        snprintf(buf, sizeof(buf), "%.0f", orp);
-        lv_label_set_text(s_lbl_prim[3], buf);
-        apply_status(3, st_orp(orp));
-    }
-    if (!isnan(temp)) {
-        snprintf(buf, sizeof(buf), "Temp: %.1f\xc2\xb0""C", temp);
-        lv_label_set_text(s_lbl_sec[3], buf);
-    }
-}
-
-void ui_exec_update_leak(bool alarm)
-{
-    if (!scr_exec) return;
-    lv_label_set_text(s_lbl_prim[4], alarm ? "ALARM!" : "CLEAR");
-    status_t st = alarm
-        ? status_t{"ALARM", 0xCC0033u}
-        : status_t{"CLEAR", 0x00C853u};
-    apply_status(4, st);
-    // Pulse the card border red on alarm
-    lv_obj_set_style_border_color(s_card[4],
-        lv_color_hex(alarm ? 0xCC0033u : 0x252538u), 0);
-    lv_obj_set_style_border_width(s_card[4], alarm ? 2 : 1, 0);
-}
-
-void ui_exec_update_th(float temp, float hum)
-{
-    if (!scr_exec) return;
-    char buf[32];
-    if (!isnan(temp)) {
-        snprintf(buf, sizeof(buf), "%.1f", temp);
-        lv_label_set_text(s_lbl_prim[5], buf);
-        apply_status(5, st_temp(temp));
-    }
-    if (!isnan(hum)) {
-        snprintf(buf, sizeof(buf), "Humidity: %.1f%%", hum);
-        lv_label_set_text(s_lbl_sec[5], buf);
-    }
-}
-
-void ui_exec_update_history(void)
-{
-    // Reserved — future bar-chart drill-down will use g_hist_7d here
-}

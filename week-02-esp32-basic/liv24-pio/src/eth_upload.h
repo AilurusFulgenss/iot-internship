@@ -17,9 +17,13 @@ void eth_upload_clear_logo(void);
 bool eth_logo_fetch_from_url(const char *url);
 void eth_upload_start(lv_obj_t *qr_obj, lv_obj_t *ip_label);
 
-// Start Ethernet (DHCP) without the HTTP upload server.
+// Start Ethernet (DHCP or static from NVS) without the HTTP upload server.
 // Returns immediately; fires IP_EVENT_ETH_GOT_IP when IP is assigned.
 void eth_start_background(void);
+
+// Returns the derived gateway string (e.g. "192.168.1.1") when static IP is
+// active, or an empty string when DHCP is used.  Valid after eth_start_background().
+void eth_get_net_gw(char *out, size_t len);
 
 #ifdef __cplusplus
 }
