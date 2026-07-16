@@ -22,10 +22,7 @@
 #include "history.h"
 #include "ui_alert.h"
 #include "ui_home.h"
-#include "ui_booking.h"
-#include "ui_room_list.h"
-#include "ui_room_detail.h"
-#include "ui_book_confirm.h"
+#include "ui_pin.h"
 #include "sensor_config.h"
 #include "cJSON.h"
 #include <math.h>
@@ -35,9 +32,6 @@ static const char *TAG = "LIV24";
 #define BOOT_BTN    GPIO_NUM_35
 #define RELAY1_GPIO GPIO_NUM_32
 #define RELAY2_GPIO GPIO_NUM_46
-#define NUM_PAGES   3
-
-
 // ── RS485 / MODBUS ─────────────────────────────────────
 #define RS485_TXD      GPIO_NUM_47
 #define RS485_RXD      GPIO_NUM_48
@@ -47,18 +41,10 @@ static const char *TAG = "LIV24";
 
 static const gpio_num_t RELAY_GPIO[2] = {RELAY1_GPIO, RELAY2_GPIO};
 
-static lv_obj_t *scr[NUM_PAGES];
+static lv_obj_t *scr[3];          // scr[0]=splash, scr[2]=relay
 static lv_obj_t *scr_eth_setup = NULL;
-static int cur_page = 0;
 
-// Page 2: sensor value labels (updated by sensor task later)
-lv_obj_t *lbl_temp_val;
-lv_obj_t *lbl_hum_val;
-lv_obj_t *lbl_sound_val;
-lv_obj_t *lbl_pm25_val;
-lv_obj_t *lbl_pm10_val;
-
-// Page 3: relay state
+// Relay state
 static bool relay_on[2] = {false, false};
 static lv_obj_t *relay_btn[2];
 static lv_obj_t *relay_btn_lbl[2];
@@ -194,39 +180,7 @@ static lv_obj_t *create_eth_setup_screen(lv_obj_t **out_qr, lv_obj_t **out_ip_la
     return scr_eth_setup;
 }
 
-// ─── Page 2: Sensor Dashboard ─────────────────────────
-
-static void add_sensor_row(lv_obj_t *parent, const char *name, const char *unit,
-                            lv_obj_t **val_lbl, int y)
-{
-    make_label(parent, name, 0x888888, &lv_font_montserrat_14, LV_ALIGN_TOP_LEFT, 60, y);
-    *val_lbl = make_label(parent, "--", 0x00ff88, &lv_font_montserrat_24,
-                          LV_ALIGN_TOP_MID, 0, y - 6);
-    make_label(parent, unit, 0x555555, &lv_font_montserrat_14, LV_ALIGN_TOP_RIGHT, -60, y);
-}
-
-static void create_sensors(void)
-{
-    scr[1] = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(scr[1], lv_color_hex(0x080808), 0);
-    lv_obj_set_style_bg_opa(scr[1], LV_OPA_COVER, 0);
-
-    make_label(scr[1], "SENSOR DATA", 0x00ff44, &lv_font_montserrat_24,
-               LV_ALIGN_TOP_MID, 0, 30);
-    make_hline(scr[1], 80);
-
-    add_sensor_row(scr[1], "Temperature", "\xC2\xB0""C",  &lbl_temp_val,  120);
-    add_sensor_row(scr[1], "Humidity",    "%",             &lbl_hum_val,   210);
-    add_sensor_row(scr[1], "Sound",       "dB",            &lbl_sound_val, 300);
-    add_sensor_row(scr[1], "PM2.5",       "ug/m3",         &lbl_pm25_val,  390);
-    add_sensor_row(scr[1], "PM10",        "ug/m3",         &lbl_pm10_val,  480);
-
-    make_hline(scr[1], 580);
-    make_label(scr[1], "[ BOOT ]  next page  >", 0x00E5FF, &lv_font_montserrat_14,
-               LV_ALIGN_BOTTOM_MID, 0, -30);
-}
-
-// ─── Page 3: Relay Control ─────────────────────────────
+// ─── Page 2: Relay Control ─────────────────────────────
 // Styled header bar (72px) matching USER/PM screens.
 // Relay buttons shifted +72px down from previous layout.
 
@@ -339,30 +293,6 @@ static uint16_t crc16(const uint8_t *buf, int len)
     return crc;
 }
 
-// Sent once at boot when CWT-TH04S is selected: changes its baud from 4800 → 9600.
-// After the sensor stores the new baud in its flash, every subsequent boot
-// will timeout here (sensor is already at 9600 and won't hear 4800 traffic),
-// then re-init at 9600 and continue normally. ~500 ms penalty per boot.
-static void cwt_th_set_baud_9600(void)
-{
-    uart_set_baudrate(RS485_UART, 4800);
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    // FC06 write reg 0x07D1 = 0x0002 (baud 9600)
-    uint8_t req[8] = {0x01, 0x06, 0x07, 0xD1, 0x00, 0x02, 0x00, 0x00};
-    uint16_t crc = crc16(req, 6);
-    req[6] = crc & 0xFF;
-    req[7] = crc >> 8;
-
-    uart_flush_input(RS485_UART);
-    uart_write_bytes(RS485_UART, req, sizeof(req));
-    vTaskDelay(pdMS_TO_TICKS(300));
-
-    uart_set_baudrate(RS485_UART, MODBUS_BAUD);
-    vTaskDelay(pdMS_TO_TICKS(100));
-    ESP_LOGI(TAG, "CWT-TH04S: baud set to 9600");
-}
-
 static void rs485_init(void)
 {
     uart_config_t cfg = {
@@ -456,70 +386,9 @@ static void sensor_read_task(void *arg)
                 wifi_mqtt_publish_sensors(t_cal, h_cal, (int)s_cal, p25_cal, p10_cal);
                 break;
             }
-            case SENSOR_TYPE_EC: {
-                float ec     = (m->idx_ec >= 0) ? regs[m->idx_ec] / m->scale : NAN;
-                float ec_cal = calib_apply(ec, &g_calib.ec);
-                ESP_LOGI(TAG, "EC=%.1f uS/cm (cal=%.1f)", ec, ec_cal);
-
-                bsp_display_lock(0);
-                ui_alert_set_mqtt_status(wifi_mqtt_is_connected());
-                ui_user_update_ec(ec_cal);
-                ui_exec_update_ec(ec_cal);
-                ui_dev_update_ec(ec);
-                bsp_display_unlock();
-
-                wifi_mqtt_publish_ec(ec_cal);
+            default:
+                ESP_LOGW(TAG, "sensor: unsupported type %d", m->type);
                 break;
-            }
-            case SENSOR_TYPE_LEAK: {
-                bool alarm = (m->idx_leak >= 0) ? (regs[m->idx_leak] == 0x0002) : false;
-                ESP_LOGI(TAG, "Leak=%s (raw=0x%04X)", alarm ? "ALARM" : "NORMAL",
-                         m->idx_leak >= 0 ? regs[m->idx_leak] : 0);
-
-                bsp_display_lock(0);
-                ui_alert_set_mqtt_status(wifi_mqtt_is_connected());
-                ui_user_update_leak(alarm);
-                ui_exec_update_leak(alarm);
-                bsp_display_unlock();
-
-                wifi_mqtt_publish_leak(alarm);
-                break;
-            }
-            case SENSOR_TYPE_TH: {
-                float temp     = (m->idx_temp >= 0) ? (int16_t)regs[m->idx_temp] / m->scale : NAN;
-                float hum      = (m->idx_hum  >= 0) ? regs[m->idx_hum]           / m->scale : NAN;
-                float t_cal    = calib_apply(temp, &g_calib.th_temp);
-                float h_cal    = calib_apply(hum,  &g_calib.th_hum);
-                ESP_LOGI(TAG, "TH: T=%.1fC H=%.1f%% (cal T=%.1f H=%.1f)", temp, hum, t_cal, h_cal);
-
-                bsp_display_lock(0);
-                ui_alert_set_mqtt_status(wifi_mqtt_is_connected());
-                ui_user_update_th(t_cal, h_cal);
-                ui_exec_update_th(t_cal, h_cal);
-                ui_dev_update_th(temp, hum);
-                ui_home_update_sensors(NAN, t_cal, h_cal);
-                bsp_display_unlock();
-
-                wifi_mqtt_publish_th(t_cal, h_cal);
-                break;
-            }
-            case SENSOR_TYPE_ORP: {
-                float orp      = (m->idx_orp  >= 0) ? (int16_t)regs[m->idx_orp]  / m->scale : NAN;
-                float temp     = (m->idx_temp >= 0) ? (int16_t)regs[m->idx_temp] / m->scale : NAN;
-                float orp_cal  = calib_apply(orp,  &g_calib.orp);
-                float t_cal    = calib_apply(temp, &g_calib.orp_temp);
-                ESP_LOGI(TAG, "ORP: %.1f mV T=%.1fC (cal ORP=%.1f T=%.1f)", orp, temp, orp_cal, t_cal);
-
-                bsp_display_lock(0);
-                ui_alert_set_mqtt_status(wifi_mqtt_is_connected());
-                ui_user_update_orp(orp_cal, t_cal);
-                ui_exec_update_orp(orp_cal, t_cal);
-                ui_dev_update_orp(orp, temp);
-                bsp_display_unlock();
-
-                wifi_mqtt_publish_orp(orp_cal, t_cal);
-                break;
-            }
             }
         } else {
             ESP_LOGW(TAG, "sensor: no response");
@@ -572,8 +441,12 @@ static void touch_nav_init(void)
             if (tz->n < 5) tz->t[tz->n] = now;
             tz->n++;
             if (tz->n >= 5) {
-                if (lv_tick_elaps(tz->t[0]) <= 3000)
-                    set_app_mode(tz->mode);
+                if (lv_tick_elaps(tz->t[0]) <= 3000) {
+                    if (tz->mode == MODE_DEV)
+                        ui_pin_show([]() { set_app_mode(MODE_DEV); });
+                    else
+                        set_app_mode(tz->mode);
+                }
                 tz->n = 0;
             }
         };
@@ -628,10 +501,6 @@ void on_short_press(void)
         // EXEC mode — short press does nothing
     } else if (active == scr_home) {
         // Home has no nav button — do nothing
-    } else if (active == scr_booking || active == scr_room_list ||
-               active == scr_room_detail || active == scr_book_confirm) {
-        lv_scr_load_anim(scr_home, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 300, 0, false);
-        ESP_LOGI(TAG, "-> Home");
     } else if (active == scr_user) {
         lv_scr_load_anim(scr_pm, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
         ESP_LOGI(TAG, "-> PM History");
@@ -715,60 +584,6 @@ static void on_hist_7d(const char *d, int len)
     }
 }
 
-static void on_hist_ec(const char *d, int len)
-{
-    hist_parse_ec(d, len);
-    if (bsp_display_lock(0)) { ui_exec_detail_refresh(); bsp_display_unlock(); }
-}
-
-static void on_hist_orp(const char *d, int len)
-{
-    hist_parse_orp(d, len);
-    if (bsp_display_lock(0)) { ui_exec_detail_refresh(); bsp_display_unlock(); }
-}
-
-static void on_hist_hhcc(const char *d, int len)
-{
-    hist_parse_hhcc(d, len);
-    if (bsp_display_lock(0)) { ui_exec_detail_refresh(); bsp_display_unlock(); }
-}
-
-static void on_hist_th(const char *d, int len)
-{
-    hist_parse_th(d, len);
-    if (bsp_display_lock(0)) { ui_exec_detail_refresh(); bsp_display_unlock(); }
-}
-
-static void on_hist_leak(const char *d, int len)
-{
-    hist_parse_leak(d, len);
-    if (bsp_display_lock(0)) { ui_exec_detail_refresh(); bsp_display_unlock(); }
-}
-
-static void on_flora(const char *json, int len)
-{
-    char buf[128];
-    int n = len < (int)sizeof(buf) - 1 ? len : (int)sizeof(buf) - 1;
-    memcpy(buf, json, n); buf[n] = '\0';
-
-    cJSON *root = cJSON_Parse(buf);
-    if (!root) return;
-
-    float temp      = cJSON_IsNumber(cJSON_GetObjectItem(root, "temp"))      ? (float)cJSON_GetObjectItem(root, "temp")->valuedouble      : NAN;
-    float moisture  = cJSON_IsNumber(cJSON_GetObjectItem(root, "moisture"))  ? (float)cJSON_GetObjectItem(root, "moisture")->valuedouble  : NAN;
-    float light     = cJSON_IsNumber(cJSON_GetObjectItem(root, "light"))     ? (float)cJSON_GetObjectItem(root, "light")->valuedouble     : NAN;
-    float fertility = cJSON_IsNumber(cJSON_GetObjectItem(root, "fertility")) ? (float)cJSON_GetObjectItem(root, "fertility")->valuedouble : NAN;
-    float battery   = cJSON_IsNumber(cJSON_GetObjectItem(root, "battery"))   ? (float)cJSON_GetObjectItem(root, "battery")->valuedouble   : NAN;
-    cJSON_Delete(root);
-
-
-    if (bsp_display_lock(0)) {
-        ui_user_update_hhcc(temp, moisture, light, fertility, battery);
-        ui_exec_update_hhcc(temp, moisture, light, fertility, battery);
-        bsp_display_unlock();
-    }
-}
-
 static void logo_url_received(const char *url)
 {
     ESP_LOGI(TAG, "Logo URL: %s", url);
@@ -798,11 +613,6 @@ extern "C" void app_main(void)
     sensor_config_init();
     calib_init();
     rs485_init();
-
-    // CWT-TH04S ships at 4800 baud — change to 9600 on first boot with this model
-    if (sensor_config_get().model_idx == 3) {
-        cwt_th_set_baud_9600();
-    }
 
     // Relay GPIO init — default OFF
     gpio_config_t relay_cfg = {};
@@ -878,7 +688,6 @@ extern "C" void app_main(void)
     // at unlock → avoids ESP32-P4 Rev 1.3 ROM deadlock.
     bsp_display_lock(0);
     create_splash();          // shows logo centered on dark bg
-    create_sensors();
     create_relay_ctrl();
     ui_user_create();
     ui_pm_create();
@@ -886,53 +695,10 @@ extern "C" void app_main(void)
     ui_exec_create();
     ui_exec_detail_create();
     ui_home_create();
-    ui_booking_create();
-    ui_room_list_create();
-    ui_room_detail_create();
-    ui_book_confirm_create();
     touch_nav_init();
     ui_alert_init();
     ui_home_set_card1_cb([]() {
         lv_scr_load_anim(scr_user, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
-    });
-    // Card 2 → Building Picker
-    ui_home_set_card2_cb([]() {
-        ui_booking_activate();
-        lv_scr_load_anim(scr_booking, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
-    });
-    // Building Picker navigation
-    ui_booking_set_back_cb([]() {
-        lv_scr_load_anim(scr_home, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 300, 0, false);
-    });
-    ui_booking_set_select_cb([](const char *bld_id) {
-        ui_room_list_activate(bld_id);
-        lv_scr_load_anim(scr_room_list, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
-    });
-    // Room List navigation
-    ui_room_list_set_back_cb([]() {
-        lv_scr_load_anim(scr_booking, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 300, 0, false);
-    });
-    ui_room_list_set_select_cb([](const char *room_id) {
-        ui_room_detail_activate(room_id);
-        lv_scr_load_anim(scr_room_detail, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
-    });
-    // Room Detail navigation
-    ui_room_detail_set_back_cb([]() {
-        lv_scr_load_anim(scr_room_list, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 300, 0, false);
-    });
-    ui_room_detail_set_slot_cb([](const char *room_id, const char *room_name,
-                                   const char *start, const char *end) {
-        ui_book_confirm_activate(room_id, room_name, start, end);
-        lv_scr_load_anim(scr_book_confirm, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
-    });
-    // Booking Confirm navigation
-    ui_book_confirm_set_back_cb([]() {
-        lv_scr_load_anim(scr_room_detail, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 300, 0, false);
-    });
-    ui_book_confirm_set_done_cb([]() {
-        // After successful booking, refresh room detail then go back to it
-        ui_room_detail_activate(nullptr);   // re-fetch same room
-        lv_scr_load_anim(scr_room_detail, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 300, 0, false);
     });
     lv_scr_load(scr[0]);     // show logo splash — inside the same lock block
     bsp_display_unlock();
@@ -951,8 +717,6 @@ extern "C" void app_main(void)
     wifi_mqtt_set_logo_url_cb(logo_url_received);
     wifi_mqtt_set_history_cb(on_hist_24h, on_hist_7d);
     wifi_mqtt_set_test_alert_cb(on_test_alert);
-    wifi_mqtt_set_flora_cb(on_flora);
-    wifi_mqtt_set_hist_sensor_cbs(on_hist_ec, on_hist_orp, on_hist_hhcc, on_hist_th, on_hist_leak);
     wifi_mqtt_init(MQTT_BROKER_URI);
     eth_start_background();
 

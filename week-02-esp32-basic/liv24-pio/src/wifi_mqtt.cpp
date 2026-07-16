@@ -1,4 +1,5 @@
 #include "wifi_mqtt.h"
+#include "eth_upload.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -22,12 +23,6 @@ static void (*s_logo_url_cb)(const char *)       = NULL;
 static void (*s_hist_24h_cb)(const char *, int)  = NULL;
 static void (*s_hist_7d_cb )(const char *, int)  = NULL;
 static void (*s_test_alert_cb)(const char *, int) = NULL;
-static void (*s_flora_cb)(const char *, int)      = NULL;
-static void (*s_hist_ec_cb  )(const char *, int)  = NULL;
-static void (*s_hist_orp_cb )(const char *, int)  = NULL;
-static void (*s_hist_hhcc_cb)(const char *, int)  = NULL;
-static void (*s_hist_th_cb  )(const char *, int)  = NULL;
-static void (*s_hist_leak_cb)(const char *, int)  = NULL;
 static char s_broker_uri[128];
 
 // ── MQTT events ───────────────────────────────────────────────────────────────
@@ -47,12 +42,6 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
         esp_mqtt_client_subscribe(s_mqtt, "liv24/history/24h",  1);
         esp_mqtt_client_subscribe(s_mqtt, "liv24/history/7d",   1);
         esp_mqtt_client_subscribe(s_mqtt, "liv24/test/alert",   0);
-        esp_mqtt_client_subscribe(s_mqtt, "liv24/flora",        1);
-        esp_mqtt_client_subscribe(s_mqtt, "liv24/hist/ec",      1);
-        esp_mqtt_client_subscribe(s_mqtt, "liv24/hist/orp",     1);
-        esp_mqtt_client_subscribe(s_mqtt, "liv24/hist/hhcc",    1);
-        esp_mqtt_client_subscribe(s_mqtt, "liv24/hist/th",      1);
-        esp_mqtt_client_subscribe(s_mqtt, "liv24/hist/leak",    1);
         // broker delivers retained messages automatically on subscribe — no request needed
         break;
 
@@ -79,30 +68,6 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
             }
             if (strcmp(topic, "liv24/test/alert") == 0) {
                 if (s_test_alert_cb) s_test_alert_cb(ev->data, ev->data_len);
-                break;
-            }
-            if (strcmp(topic, "liv24/flora") == 0) {
-                if (s_flora_cb) s_flora_cb(ev->data, ev->data_len);
-                break;
-            }
-            if (strcmp(topic, "liv24/hist/ec") == 0) {
-                if (s_hist_ec_cb) s_hist_ec_cb(ev->data, ev->data_len);
-                break;
-            }
-            if (strcmp(topic, "liv24/hist/orp") == 0) {
-                if (s_hist_orp_cb) s_hist_orp_cb(ev->data, ev->data_len);
-                break;
-            }
-            if (strcmp(topic, "liv24/hist/hhcc") == 0) {
-                if (s_hist_hhcc_cb) s_hist_hhcc_cb(ev->data, ev->data_len);
-                break;
-            }
-            if (strcmp(topic, "liv24/hist/th") == 0) {
-                if (s_hist_th_cb) s_hist_th_cb(ev->data, ev->data_len);
-                break;
-            }
-            if (strcmp(topic, "liv24/hist/leak") == 0) {
-                if (s_hist_leak_cb) s_hist_leak_cb(ev->data, ev->data_len);
                 break;
             }
             if (strcmp(topic, "liv24/logo/url") == 0) {
@@ -163,23 +128,25 @@ static void start_mqtt_client(void)
 
 static void mqtt_start_task(void *arg)
 {
-#ifdef STATIC_GW_ADDR
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock >= 0) {
-        struct timeval tv = {.tv_sec = 5, .tv_usec = 0};
-        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-        struct sockaddr_in gw = {};
-        gw.sin_family = AF_INET;
-        gw.sin_port   = htons(80);
-        ip4addr_aton(STATIC_GW_ADDR, (ip4_addr_t *)&gw.sin_addr);
-        bool ok = (connect(sock, (struct sockaddr *)&gw, sizeof(gw)) == 0);
-        close(sock);
-        if (ok)
-            ESP_LOGI(TAG, "  gateway probe PASS — ARP cache warm, starting MQTT");
-        else
-            ESP_LOGW(TAG, "  gateway probe FAIL — Ethernet RX may be broken");
+    char gw_str[16];
+    eth_get_net_gw(gw_str, sizeof(gw_str));
+    if (gw_str[0]) {
+        int sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (sock >= 0) {
+            struct timeval tv = {.tv_sec = 5, .tv_usec = 0};
+            setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+            struct sockaddr_in gw = {};
+            gw.sin_family = AF_INET;
+            gw.sin_port   = htons(80);
+            ip4addr_aton(gw_str, (ip4_addr_t *)&gw.sin_addr);
+            bool ok = (connect(sock, (struct sockaddr *)&gw, sizeof(gw)) == 0);
+            close(sock);
+            if (ok)
+                ESP_LOGI(TAG, "  gateway probe PASS — ARP cache warm, starting MQTT");
+            else
+                ESP_LOGW(TAG, "  gateway probe FAIL — Ethernet RX may be broken");
+        }
     }
-#endif
     start_mqtt_client();
     vTaskDelete(NULL);
 }
@@ -193,25 +160,20 @@ static void eth_got_ip_handler(void *arg, esp_event_base_t base,
     ESP_LOGI(TAG, "Ethernet IP: " IPSTR " — starting MQTT client",
              IP2STR(&ev->ip_info.ip));
 
-#if defined(STATIC_IP_ADDR) && defined(STATIC_DNS_ADDR)
-    // Set DNS here (in IP event) so it's configured right before MQTT resolves
-    esp_netif_dns_info_t dns = {};
-    dns.ip.type = ESP_IPADDR_TYPE_V4;
-    ip4addr_aton(STATIC_DNS_ADDR, (ip4_addr_t *)&dns.ip.u_addr.ip4);
-    esp_netif_set_dns_info(ev->esp_netif, ESP_NETIF_DNS_MAIN, &dns);
-    ip4addr_aton("8.8.8.8", (ip4_addr_t *)&dns.ip.u_addr.ip4);
-    esp_netif_set_dns_info(ev->esp_netif, ESP_NETIF_DNS_BACKUP, &dns);
-    ESP_LOGI(TAG, "DNS set: primary=" STATIC_DNS_ADDR " backup=8.8.8.8");
-#elif defined(STATIC_IP_ADDR)
-    // Fallback: use gateway as DNS + Google backup
-    esp_netif_dns_info_t dns = {};
-    dns.ip.type = ESP_IPADDR_TYPE_V4;
-    ip4addr_aton(STATIC_GW_ADDR, (ip4_addr_t *)&dns.ip.u_addr.ip4);
-    esp_netif_set_dns_info(ev->esp_netif, ESP_NETIF_DNS_MAIN, &dns);
-    ip4addr_aton("8.8.8.8", (ip4_addr_t *)&dns.ip.u_addr.ip4);
-    esp_netif_set_dns_info(ev->esp_netif, ESP_NETIF_DNS_BACKUP, &dns);
-    ESP_LOGI(TAG, "DNS set: primary=" STATIC_GW_ADDR " backup=8.8.8.8");
-#endif
+    {
+        char gw_str[16];
+        eth_get_net_gw(gw_str, sizeof(gw_str));
+        if (gw_str[0]) {
+            // Static IP — use derived gateway as primary DNS, Google as backup
+            esp_netif_dns_info_t dns = {};
+            dns.ip.type = ESP_IPADDR_TYPE_V4;
+            ip4addr_aton(gw_str, (ip4_addr_t *)&dns.ip.u_addr.ip4);
+            esp_netif_set_dns_info(ev->esp_netif, ESP_NETIF_DNS_MAIN, &dns);
+            ip4addr_aton("8.8.8.8", (ip4_addr_t *)&dns.ip.u_addr.ip4);
+            esp_netif_set_dns_info(ev->esp_netif, ESP_NETIF_DNS_BACKUP, &dns);
+            ESP_LOGI(TAG, "DNS set: primary=%s backup=8.8.8.8", gw_str);
+        }
+    }
 
     // Sync time via NTP — Bangkok timezone (UTC+7)
     setenv("TZ", "ICT-7", 1);
@@ -289,25 +251,6 @@ void wifi_mqtt_set_test_alert_cb(void (*cb)(const char *json, int len))
     s_test_alert_cb = cb;
 }
 
-void wifi_mqtt_set_flora_cb(void (*cb)(const char *json, int len))
-{
-    s_flora_cb = cb;
-}
-
-void wifi_mqtt_set_hist_sensor_cbs(
-    void (*ec_cb  )(const char *d, int len),
-    void (*orp_cb )(const char *d, int len),
-    void (*hhcc_cb)(const char *d, int len),
-    void (*th_cb  )(const char *d, int len),
-    void (*leak_cb)(const char *d, int len))
-{
-    s_hist_ec_cb   = ec_cb;
-    s_hist_orp_cb  = orp_cb;
-    s_hist_hhcc_cb = hhcc_cb;
-    s_hist_th_cb   = th_cb;
-    s_hist_leak_cb = leak_cb;
-}
-
 bool wifi_mqtt_is_connected(void)
 {
     return s_mqtt_ready;
@@ -332,33 +275,3 @@ void wifi_mqtt_publish_sensors(float temp, float hum, int sound,
     esp_mqtt_client_publish(s_mqtt, "liv24/sensors", payload, 0, 0, 0);
 }
 
-void wifi_mqtt_publish_ec(float ec)
-{
-    if (!s_mqtt_ready) return;
-    char payload[48];
-    snprintf(payload, sizeof(payload), "{\"ec\":%.1f}", ec);
-    esp_mqtt_client_publish(s_mqtt, "liv24/ec", payload, 0, 0, 0);
-}
-
-void wifi_mqtt_publish_leak(bool alarm)
-{
-    if (!s_mqtt_ready) return;
-    esp_mqtt_client_publish(s_mqtt, "liv24/leak",
-        alarm ? "{\"leak\":true}" : "{\"leak\":false}", 0, 0, 0);
-}
-
-void wifi_mqtt_publish_th(float temp, float hum)
-{
-    if (!s_mqtt_ready) return;
-    char payload[64];
-    snprintf(payload, sizeof(payload), "{\"temp\":%.1f,\"hum\":%.1f}", temp, hum);
-    esp_mqtt_client_publish(s_mqtt, "liv24/th", payload, 0, 0, 0);
-}
-
-void wifi_mqtt_publish_orp(float orp, float temp)
-{
-    if (!s_mqtt_ready) return;
-    char payload[64];
-    snprintf(payload, sizeof(payload), "{\"orp\":%.1f,\"temp\":%.1f}", orp, temp);
-    esp_mqtt_client_publish(s_mqtt, "liv24/orp", payload, 0, 0, 0);
-}

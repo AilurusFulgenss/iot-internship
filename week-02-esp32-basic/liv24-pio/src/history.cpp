@@ -120,7 +120,7 @@ void hist_parse_hhcc(const char *json, int len)
 void hist_parse_th(const char *json, int len)
 {
     char *buf = strndup(json, len);
-    if (!buf) return;
+    if (!buf) return;   
     cJSON *root = cJSON_Parse(buf);
     free(buf);
     if (!root) { ESP_LOGW(TAG, "th 7d JSON parse failed"); return; }
