@@ -556,6 +556,7 @@ void eth_start_background(void)
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP,
                                                eth_event_handler, NULL));
     eth_hw_start(eth_netif);
+
 #ifdef STATIC_IP_ADDR
     ESP_LOGI(TAG, "Ethernet started — static IP configured.");
 #else

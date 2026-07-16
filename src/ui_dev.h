@@ -3,9 +3,10 @@
 
 extern lv_obj_t *scr_dev;
 
-// Call once (inside bsp_display_lock) during app_main UI init
 void ui_dev_create(void);
 
-// Call from sensor task (inside bsp_display_lock) on every sensor read
-void ui_dev_update(float t_raw, float h_raw, float s_raw,
-                   float p25_raw, float p10_raw);
+void ui_dev_update_sn300(float t_raw, float h_raw, float s_raw,
+                         float p25_raw, float p10_raw);
+void ui_dev_update_th(float t_raw, float h_raw);
+void ui_dev_update_ec(float ec_raw);
+void ui_dev_update_orp(float orp_raw, float temp_raw);
