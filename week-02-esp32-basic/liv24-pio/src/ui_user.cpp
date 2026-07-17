@@ -1,6 +1,7 @@
 #include "ui_user.h"
 #include "eth_upload.h"
 #include "sensor_config.h"
+#include "bsp/esp32_p4_wifi6_touch_lcd_4b.h"
 #include <stdio.h>
 #include <cmath>
 
@@ -37,6 +38,12 @@ static lv_obj_t *cont_pm = NULL;
 // AQI toggle
 static lv_obj_t *sw_aqi  = NULL;
 static lv_obj_t *lbl_aqi = NULL;
+
+// Brightness toggle
+static lv_obj_t *lbl_brt     = NULL;
+static int        g_brt_level = 2;  // index into {30,60,100}, start at 100%
+
+static const int BRT_LEVELS[] = {30, 60, 100};
 
 // ── AQI helpers ───────────────────────────────────────────────────────────────
 
@@ -178,6 +185,19 @@ static void make_card(lv_obj_t *parent, int w, int h,
     out->lbl_unit  = lbl_u;
 }
 
+// ── Brightness callback ───────────────────────────────────────────────────────
+
+static void brightness_cb(lv_event_t * /*e*/)
+{
+    g_brt_level = (g_brt_level + 1) % 3;
+    bsp_display_brightness_set(BRT_LEVELS[g_brt_level]);
+    if (lbl_brt) {
+        char buf[6];
+        snprintf(buf, sizeof(buf), "%d%%", BRT_LEVELS[g_brt_level]);
+        lv_label_set_text(lbl_brt, buf);
+    }
+}
+
 // ── Content container factory ─────────────────────────────────────────────────
 
 static lv_obj_t *make_cont(lv_obj_t *parent)
@@ -246,6 +266,23 @@ void ui_user_create(void)
     lv_obj_set_style_text_color(lbl_sub, lv_color_hex(0x3A4A5A), 0);
     lv_obj_set_style_text_font(lbl_sub, &lv_font_montserrat_14, 0);
     lv_obj_align(lbl_sub, LV_ALIGN_LEFT_MID, 112 + title_x, 12);
+
+    // Brightness toggle button (left of AQI section)
+    lv_obj_t *btn_brt = lv_btn_create(hdr);
+    lv_obj_set_size(btn_brt, 58, 28);
+    lv_obj_align(btn_brt, LV_ALIGN_RIGHT_MID, -152, 0);
+    lv_obj_set_style_bg_color(btn_brt, lv_color_hex(0x1A1A2E), 0);
+    lv_obj_set_style_bg_color(btn_brt, lv_color_hex(0x2A2A40), LV_STATE_PRESSED);
+    lv_obj_set_style_border_color(btn_brt, lv_color_hex(0x334455), 0);
+    lv_obj_set_style_border_width(btn_brt, 1, 0);
+    lv_obj_set_style_radius(btn_brt, 6, 0);
+    lv_obj_set_style_shadow_width(btn_brt, 0, 0);
+    lv_obj_add_event_cb(btn_brt, brightness_cb, LV_EVENT_CLICKED, NULL);
+    lbl_brt = lv_label_create(btn_brt);
+    lv_label_set_text(lbl_brt, "100%");
+    lv_obj_set_style_text_color(lbl_brt, lv_color_hex(0x778899), 0);
+    lv_obj_set_style_text_font(lbl_brt, &lv_font_montserrat_14, 0);
+    lv_obj_center(lbl_brt);
 
     lbl_aqi = lv_label_create(hdr);
     lv_label_set_text(lbl_aqi, "AQI Color");

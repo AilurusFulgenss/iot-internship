@@ -1,4 +1,5 @@
 #include "eth_upload.h"
+#include "wifi_mqtt.h"
 #include "sensor_config.h"
 #include "esp_log.h"
 #include "nvs.h"
@@ -288,6 +289,41 @@ static const char HTML[] =
 "  }).catch(function(e){tb.disabled=false;tst.innerHTML='<span style=\"color:#ff4444\">Error: '+e+'</span>';});"
 "}"
 "</script>"
+"<hr style='border:1px solid #1a2a3a;margin:20px 0'>"
+"<h2>MQTT Config</h2>"
+"<p id='dev_p' style='color:#445566;font-size:12px'>Loading device info...</p>"
+"<div style='display:flex;align-items:center;gap:12px;margin:8px 0'>"
+"<span style='color:#556677;font-size:14px;white-space:nowrap'>Broker IP</span>"
+"<input type='text' id='mhost' placeholder='192.168.1.111'"
+" style='flex:1;padding:10px;background:#111;color:#eee;"
+"border:1px solid #334455;border-radius:8px;font-size:15px'>"
+"</div>"
+"<div style='display:flex;align-items:center;gap:12px;margin:8px 0'>"
+"<span style='color:#556677;font-size:14px;white-space:nowrap'>Port</span>"
+"<input type='number' id='mport' min='1' max='65535' value='1883'"
+" style='flex:1;padding:10px;background:#111;color:#eee;"
+"border:1px solid #334455;border-radius:8px;font-size:15px'>"
+"</div>"
+"<button onclick='saveMqtt()'>Save MQTT Config</button>"
+"<div id='mst' style='margin-top:10px;min-height:20px;font-size:14px;color:#00cc44'></div>"
+"<script>"
+"fetch('/mqtt_info').then(function(r){return r.json();}).then(function(d){"
+"  document.getElementById('mhost').value=d.host||'';"
+"  document.getElementById('mport').value=d.port||1883;"
+"  document.getElementById('dev_p').textContent="
+"    'Device ID: '+d.device_id+'  |  Topic prefix: '+d.prefix;"
+"}).catch(function(){});"
+"function saveMqtt(){"
+"  var h=document.getElementById('mhost').value.trim();"
+"  var p=document.getElementById('mport').value;"
+"  var st=document.getElementById('mst');"
+"  fetch('/mqtt_cfg',{method:'POST',"
+"    headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+"    body:'host='+encodeURIComponent(h)+'&port='+p})"
+"  .then(function(r){return r.text();})"
+"  .then(function(t){st.style.color='#00cc44';st.textContent=t;})"
+"  .catch(function(e){st.style.color='#ff4444';st.textContent='Error: '+e;});}"
+"</script>"
 "</body>"
 "</html>";
 
@@ -531,6 +567,68 @@ static esp_err_t post_sensor_cfg_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+// ── MQTT config handlers ──────────────────────────────────────────────────────
+
+static esp_err_t get_mqtt_info_handler(httpd_req_t *req)
+{
+    if (!is_authenticated(req)) return redirect_to_login(req);
+    char host[64] = "";
+    uint16_t port = 1883;
+    {
+        nvs_handle_t h;
+        if (nvs_open("mqtt_cfg", NVS_READONLY, &h) == ESP_OK) {
+            size_t len = sizeof(host);
+            nvs_get_str(h, "host", host, &len);
+            nvs_get_u16(h, "port", &port);
+            nvs_close(h);
+        }
+    }
+    const char *dev_id = wifi_mqtt_get_device_id();
+    char prefix[52];
+    snprintf(prefix, sizeof(prefix), "esp32_p4_86/%s", dev_id);
+    char json[256];
+    snprintf(json, sizeof(json),
+             "{\"host\":\"%s\",\"port\":%d,\"device_id\":\"%s\",\"prefix\":\"%s\"}",
+             host, (int)port, dev_id, prefix);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, json);
+}
+
+static esp_err_t post_mqtt_cfg_handler(httpd_req_t *req)
+{
+    if (!is_authenticated(req)) return redirect_to_login(req);
+    char body[128] = {};
+    int len = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (len <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty body");
+        return ESP_FAIL;
+    }
+    body[len] = '\0';
+
+    char host[64] = "";
+    uint16_t port = 1883;
+    char *p = strstr(body, "host=");
+    if (p) {
+        strncpy(host, p + 5, sizeof(host) - 1);
+        char *end = strchr(host, '&'); if (end) *end = '\0';
+        // decode '+' as space (simple URL decode)
+        for (char *c = host; *c; c++) if (*c == '+') *c = ' ';
+    }
+    p = strstr(body, "port=");
+    if (p) { int v = atoi(p + 5); port = (v > 0 && v < 65536) ? (uint16_t)v : 1883; }
+
+    nvs_handle_t h;
+    if (nvs_open("mqtt_cfg", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_str(h, "host", host);
+        nvs_set_u16(h, "port", port);
+        nvs_commit(h);
+        nvs_close(h);
+        ESP_LOGI(TAG, "MQTT config saved: %s:%d", host, (int)port);
+    }
+    httpd_resp_sendstr(req, "MQTT config saved! Restart device to apply.");
+    return ESP_OK;
+}
+
 // ── Ethernet event handler ────────────────────────────────────────────────────
 
 static void eth_event_handler(void *arg, esp_event_base_t base,
@@ -611,7 +709,7 @@ static void start_http_server(void)
     httpd_handle_t server = NULL;
     httpd_config_t http_cfg = HTTPD_DEFAULT_CONFIG();
     http_cfg.stack_size       = 8192;
-    http_cfg.max_uri_handlers = 10;
+    http_cfg.max_uri_handlers = 12;
 
     if (httpd_start(&server, &http_cfg) != ESP_OK) {
         ESP_LOGE(TAG, "HTTP server start failed");
@@ -626,6 +724,8 @@ static void start_http_server(void)
     httpd_uri_t uri_sensor_info = { "/sensor_info", HTTP_GET,  get_sensor_info_handler, NULL };
     httpd_uri_t uri_sensor_cfg  = { "/sensor_cfg",  HTTP_POST, post_sensor_cfg_handler, NULL };
     httpd_uri_t uri_sensor_test = { "/sensor_test", HTTP_GET,  get_sensor_test_handler, NULL };
+    httpd_uri_t uri_mqtt_info   = { "/mqtt_info",   HTTP_GET,  get_mqtt_info_handler,   NULL };
+    httpd_uri_t uri_mqtt_cfg    = { "/mqtt_cfg",    HTTP_POST, post_mqtt_cfg_handler,   NULL };
     httpd_register_uri_handler(server, &uri_login_get);
     httpd_register_uri_handler(server, &uri_login_post);
     httpd_register_uri_handler(server, &uri_root);
@@ -634,6 +734,8 @@ static void start_http_server(void)
     httpd_register_uri_handler(server, &uri_sensor_info);
     httpd_register_uri_handler(server, &uri_sensor_cfg);
     httpd_register_uri_handler(server, &uri_sensor_test);
+    httpd_register_uri_handler(server, &uri_mqtt_info);
+    httpd_register_uri_handler(server, &uri_mqtt_cfg);
     ESP_LOGI(TAG, "HTTP server ready on port 80");
 }
 

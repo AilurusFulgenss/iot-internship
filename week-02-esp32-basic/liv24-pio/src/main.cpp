@@ -717,6 +717,12 @@ extern "C" void app_main(void)
     wifi_mqtt_set_logo_url_cb(logo_url_received);
     wifi_mqtt_set_history_cb(on_hist_24h, on_hist_7d);
     wifi_mqtt_set_test_alert_cb(on_test_alert);
+    wifi_mqtt_set_ip_cb([](const char *ip) {
+        if (bsp_display_lock(0)) {
+            ui_dev_update_network(ip);
+            bsp_display_unlock();
+        }
+    });
     wifi_mqtt_init(MQTT_BROKER_URI);
     eth_start_background();
 

@@ -1,0 +1,187 @@
+# Loads default set of integrations. Do not remove.
+default_config:
+
+frontend:
+  themes: !include_dir_merge_named themes
+
+automation: !include automations.yaml
+script: !include scripts.yaml
+scene: !include scenes.yaml
+
+mqtt:
+  # Topic format: esp32_p4_86/{device_id}/...
+  # device_id = 12-char lowercase MAC hex, visible on DEV screen → Network tab → CURRENT STATUS
+  # For multi-device: duplicate sensor blocks with each device's ID.
+  # Relay command_topic must use the SPECIFIC device ID (no wildcard for publish).
+  # Replace REPLACE_WITH_DEVICE_ID below after first boot.
+  sensor:
+    # ── SN-300 PM Sensor ─────────────────────────────────────────────
+    # + wildcard accepts data from any device; works fine for single-device deployments.
+    - name: "LIV24 Temperature"
+      unique_id: liv24_temp
+      state_topic: "esp32_p4_86/+/sensors"
+      value_template: "{{ value_json.temp | default(none) }}"
+      unit_of_measurement: "°C"
+      device_class: temperature
+      state_class: measurement
+
+    - name: "LIV24 Humidity"
+      unique_id: liv24_hum
+      state_topic: "esp32_p4_86/+/sensors"
+      value_template: "{{ value_json.hum | default(none) }}"
+      unit_of_measurement: "%"
+      device_class: humidity
+      state_class: measurement
+
+    - name: "LIV24 PM2.5"
+      unique_id: liv24_pm25
+      state_topic: "esp32_p4_86/+/sensors"
+      value_template: "{{ value_json.pm25 | default(none) }}"
+      unit_of_measurement: "µg/m³"
+      device_class: pm25
+      state_class: measurement
+
+    - name: "LIV24 PM10"
+      unique_id: liv24_pm10
+      state_topic: "esp32_p4_86/+/sensors"
+      value_template: "{{ value_json.pm10 | default(none) }}"
+      unit_of_measurement: "µg/m³"
+      device_class: pm10
+      state_class: measurement
+
+    - name: "LIV24 Sound"
+      unique_id: liv24_sound
+      state_topic: "esp32_p4_86/+/sensors"
+      value_template: "{{ value_json.sound | default(none) }}"
+      unit_of_measurement: "dB"
+      state_class: measurement
+
+  switch:
+    # command_topic requires the specific device ID — replace REPLACE_WITH_DEVICE_ID
+    # with the 12-char hex ID shown on the DEV screen after first boot.
+    - name: "LIV24 Relay 1"
+      unique_id: liv24_relay_1
+      command_topic: "esp32_p4_86/REPLACE_WITH_DEVICE_ID/relay/1/set"
+      state_topic: "esp32_p4_86/+/relay/1/state"
+      payload_on: "ON"
+      payload_off: "OFF"
+      retain: false
+
+    - name: "LIV24 Relay 2"
+      unique_id: liv24_relay_2
+      command_topic: "esp32_p4_86/REPLACE_WITH_DEVICE_ID/relay/2/set"
+      state_topic: "esp32_p4_86/+/relay/2/state"
+      payload_on: "ON"
+      payload_off: "OFF"
+      retain: false
+
+sensor:
+  - platform: statistics
+    name: "LIV24 Temp 1h"
+    entity_id: sensor.liv24_temperature
+    state_characteristic: mean
+    max_age:
+      hours: 1
+    sampling_size: 20
+
+  - platform: statistics
+    name: "LIV24 Hum 1h"
+    entity_id: sensor.liv24_humidity
+    state_characteristic: mean
+    max_age:
+      hours: 1
+    sampling_size: 20
+
+  - platform: statistics
+    name: "LIV24 PM25 1h"
+    entity_id: sensor.liv24_pm2_5
+    state_characteristic: mean
+    max_age:
+      hours: 1
+    sampling_size: 20
+
+  - platform: statistics
+    name: "LIV24 PM10 1h"
+    entity_id: sensor.liv24_pm10
+    state_characteristic: mean
+    max_age:
+      hours: 1
+    sampling_size: 20
+
+  - platform: statistics
+    name: "LIV24 Sound 1h"
+    entity_id: sensor.liv24_sound
+    state_characteristic: mean
+    max_age:
+      hours: 1
+    sampling_size: 20
+
+  # ── Room Booking Status (REST) ────────────────────────────
+  - platform: rest
+    name: "room_mtg1_status"
+    resource: "http://192.168.1.105:5000/api/rooms/M-MTG1"
+    scan_interval: 60
+    value_template: "{{ value_json.status }}"
+    json_attributes:
+      - status
+      - current
+      - next
+
+input_text:
+  # ── PM sensor history ─────────────────────────────────────
+  liv24_24h_temp:
+    max: 255
+  liv24_24h_hum:
+    max: 255
+  liv24_24h_pm25:
+    max: 255
+  liv24_24h_pm10:
+    max: 255
+  liv24_24h_sound:
+    max: 255
+  liv24_7d_temp:
+    max: 255
+  liv24_7d_hum:
+    max: 255
+  liv24_7d_pm25:
+    max: 255
+  liv24_7d_pm10:
+    max: 255
+  liv24_7d_sound:
+    max: 255
+  # ── Booking form ──────────────────────────────────────────
+  booking_title:
+    name: Meeting Title
+    max: 64
+  booking_organizer:
+    name: Your Name
+    max: 64
+
+input_datetime:
+  # ── Existing booking helpers ──────────────────────────────
+  room_mtg1_booking_start:
+    name: "MTG1 Booking Start"
+    has_date: true
+    has_time: true
+  room_mtg1_booking_end:
+    name: "MTG1 Booking End"
+    has_date: true
+    has_time: true
+  room_mtg1_pre_trigger:
+    name: "MTG1 Pre-booking Trigger"
+    has_date: true
+    has_time: true
+  room_mtg1_post_trigger:
+    name: "MTG1 Post-booking Trigger"
+    has_date: true
+    has_time: true
+  # ── Booking form ──────────────────────────────────────────
+  booking_start:
+    name: Booking Start
+    has_date: true
+    has_time: true
+  booking_end:
+    name: Booking End
+    has_date: true
+    has_time: true
+

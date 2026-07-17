@@ -1,4 +1,5 @@
 #include "ui_dev.h"
+#include "wifi_mqtt.h"
 #include "calib.h"
 #include "esp_log.h"
 #include "nvs.h"
@@ -54,6 +55,10 @@ static lv_obj_t *g_num_disp    = NULL;
 
 // ── Confirmation modal ────────────────────────────────────────────────────────
 static lv_obj_t *g_confirm_overlay = NULL;
+
+// ── Network status labels (updated via ui_dev_update_network) ─────────────────
+static lv_obj_t *g_lbl_status_ip   = NULL;
+static lv_obj_t *g_lbl_status_mode = NULL;
 
 // ── Calib helpers ─────────────────────────────────────────────────────────────
 static sensor_calib_t *calib_gs(int idx)
@@ -540,6 +545,42 @@ static void octet_cb(lv_event_t *e)
 
 static void make_net_tab(lv_obj_t *parent)
 {
+    // ── Current Status card ───────────────────────────────────────────────────
+    lv_obj_t *sc = lv_obj_create(parent);
+    lv_obj_set_size(sc, 688, 114);
+    lv_obj_set_style_bg_color(sc, lv_color_hex(0x0B1220), 0);
+    lv_obj_set_style_bg_opa(sc, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(sc, 12, 0);
+    lv_obj_set_style_border_color(sc, lv_color_hex(0x1E3A58), 0);
+    lv_obj_set_style_border_width(sc, 1, 0);
+    lv_obj_set_style_pad_all(sc, 14, 0);
+    lv_obj_clear_flag(sc, LV_OBJ_FLAG_SCROLLABLE);
+
+    make_lbl(sc, "CURRENT STATUS", 0x2A4A6A, &lv_font_montserrat_14,
+             LV_ALIGN_TOP_LEFT, 0, 0);
+
+    char id_buf[36];
+    snprintf(id_buf, sizeof(id_buf), "ID: %s", wifi_mqtt_get_device_id());
+    make_lbl(sc, id_buf, 0x4A6A90, &lv_font_montserrat_14,
+             LV_ALIGN_TOP_LEFT, 0, 22);
+
+    char mode_buf[24];
+    snprintf(mode_buf, sizeof(mode_buf), "Mode: %s",
+             strcmp(g_net_mode, "static") == 0 ? "STATIC" : "DHCP");
+    g_lbl_status_mode = make_lbl(sc, mode_buf, 0x5577AA, &lv_font_montserrat_14,
+                                 LV_ALIGN_TOP_MID, 0, 22);
+
+    g_lbl_status_ip = make_lbl(sc, "IP: --", 0x00CC88, &lv_font_montserrat_24,
+                               LV_ALIGN_BOTTOM_LEFT, 0, 0);
+
+    // ── Separator ─────────────────────────────────────────────────────────────
+    lv_obj_t *sep = lv_obj_create(parent);
+    lv_obj_set_size(sep, 688, 1);
+    lv_obj_set_style_bg_color(sep, lv_color_hex(0x1A2A3A), 0);
+    lv_obj_set_style_bg_opa(sep, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(sep, 0, 0);
+    lv_obj_clear_flag(sep, LV_OBJ_FLAG_SCROLLABLE);
+
     // ── DHCP / STATIC toggle (fill full 688px width) ──────────────────────────
     lv_obj_t *toggle_row = lv_obj_create(parent);
     lv_obj_set_size(toggle_row, 688, 68);
@@ -787,6 +828,18 @@ void ui_dev_create(void)
         make_sensor_card(g_tab_cont[TAB_SN300], i, SN_NAMES[i], SN_UNITS[i]);
     add_save_row(g_tab_cont[TAB_SN300]);
     lv_obj_add_flag(g_tab_cont[TAB_SN300], LV_OBJ_FLAG_HIDDEN);
+}
+
+// ── ui_dev_update_network (call from inside bsp_display_lock) ─────────────────
+void ui_dev_update_network(const char *ip_str)
+{
+    if (!scr_dev || !ip_str) return;
+    if (g_lbl_status_ip) {
+        char buf[24];
+        snprintf(buf, sizeof(buf), "IP: %s", ip_str);
+        lv_label_set_text(g_lbl_status_ip, buf);
+        lv_obj_set_style_text_color(g_lbl_status_ip, lv_color_hex(0x00E5FF), 0);
+    }
 }
 
 // ── Update (called from sensor task inside bsp_display_lock) ─────────────────
