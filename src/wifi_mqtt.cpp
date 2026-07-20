@@ -1,9 +1,12 @@
 #include "wifi_mqtt.h"
+#include "eth_upload.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "mqtt_client.h"
 #include "esp_sntp.h"
+#include "esp_mac.h"
+#include "nvs.h"
 #include "lwip/ip4_addr.h"
 #include "lwip/sockets.h"
 #include "freertos/FreeRTOS.h"
@@ -19,16 +22,21 @@ static esp_mqtt_client_handle_t s_mqtt       = NULL;
 static volatile bool             s_mqtt_ready = false;
 static void (*s_relay_cb)(int, bool)             = NULL;
 static void (*s_logo_url_cb)(const char *)       = NULL;
-static void (*s_hist_24h_cb)(const char *, int)  = NULL;
-static void (*s_hist_7d_cb )(const char *, int)  = NULL;
 static void (*s_test_alert_cb)(const char *, int) = NULL;
-static void (*s_flora_cb)(const char *, int)      = NULL;
-static void (*s_hist_ec_cb  )(const char *, int)  = NULL;
-static void (*s_hist_orp_cb )(const char *, int)  = NULL;
-static void (*s_hist_hhcc_cb)(const char *, int)  = NULL;
-static void (*s_hist_th_cb  )(const char *, int)  = NULL;
-static void (*s_hist_leak_cb)(const char *, int)  = NULL;
 static char s_broker_uri[128];
+
+static char   s_device_id[13]        = {};   // 12 hex chars + null
+static char   s_topic_prefix[40]     = {};   // "esp32_p4_86/XXXXXXXXXXXX"
+static void (*s_ip_cb)(const char *) = NULL;
+
+// Prebuilt topic strings (filled in wifi_mqtt_init)
+static char T_RELAY1_SET[52]   = {};
+static char T_RELAY2_SET[52]   = {};
+static char T_LOGO_URL[52]     = {};
+static char T_TEST_ALERT[52]   = {};
+static char T_SENSORS[52]      = {};
+static char T_RELAY1_STATE[52] = {};
+static char T_RELAY2_STATE[52] = {};
 
 // ── MQTT events ───────────────────────────────────────────────────────────────
 
@@ -41,18 +49,10 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
     case MQTT_EVENT_CONNECTED:
         ESP_LOGI(TAG, "MQTT connected → %s", s_broker_uri);
         s_mqtt_ready = true;
-        esp_mqtt_client_subscribe(s_mqtt, "liv24/relay/1/set",  0);
-        esp_mqtt_client_subscribe(s_mqtt, "liv24/relay/2/set",  0);
-        esp_mqtt_client_subscribe(s_mqtt, "liv24/logo/url",     1);
-        esp_mqtt_client_subscribe(s_mqtt, "liv24/history/24h",  1);
-        esp_mqtt_client_subscribe(s_mqtt, "liv24/history/7d",   1);
-        esp_mqtt_client_subscribe(s_mqtt, "liv24/test/alert",   0);
-        esp_mqtt_client_subscribe(s_mqtt, "liv24/flora",        1);
-        esp_mqtt_client_subscribe(s_mqtt, "liv24/hist/ec",      1);
-        esp_mqtt_client_subscribe(s_mqtt, "liv24/hist/orp",     1);
-        esp_mqtt_client_subscribe(s_mqtt, "liv24/hist/hhcc",    1);
-        esp_mqtt_client_subscribe(s_mqtt, "liv24/hist/th",      1);
-        esp_mqtt_client_subscribe(s_mqtt, "liv24/hist/leak",    1);
+        esp_mqtt_client_subscribe(s_mqtt, T_RELAY1_SET,   0);
+        esp_mqtt_client_subscribe(s_mqtt, T_RELAY2_SET,   0);
+        esp_mqtt_client_subscribe(s_mqtt, T_LOGO_URL,     1);
+        esp_mqtt_client_subscribe(s_mqtt, T_TEST_ALERT,   0);
         // broker delivers retained messages automatically on subscribe — no request needed
         break;
 
@@ -64,48 +64,16 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
     case MQTT_EVENT_DATA:
         if (!s_relay_cb || ev->topic_len == 0 || ev->data_len == 0) break;
         {
-            char topic[32] = {};
+            char topic[56] = {};
             int tlen = ev->topic_len < (int)sizeof(topic) - 1
                        ? ev->topic_len : (int)sizeof(topic) - 1;
             memcpy(topic, ev->topic, tlen);
 
-            if (strcmp(topic, "liv24/history/24h") == 0) {
-                if (s_hist_24h_cb) s_hist_24h_cb(ev->data, ev->data_len);
-                break;
-            }
-            if (strcmp(topic, "liv24/history/7d") == 0) {
-                if (s_hist_7d_cb) s_hist_7d_cb(ev->data, ev->data_len);
-                break;
-            }
-            if (strcmp(topic, "liv24/test/alert") == 0) {
+            if (strcmp(topic, T_TEST_ALERT) == 0) {
                 if (s_test_alert_cb) s_test_alert_cb(ev->data, ev->data_len);
                 break;
             }
-            if (strcmp(topic, "liv24/flora") == 0) {
-                if (s_flora_cb) s_flora_cb(ev->data, ev->data_len);
-                break;
-            }
-            if (strcmp(topic, "liv24/hist/ec") == 0) {
-                if (s_hist_ec_cb) s_hist_ec_cb(ev->data, ev->data_len);
-                break;
-            }
-            if (strcmp(topic, "liv24/hist/orp") == 0) {
-                if (s_hist_orp_cb) s_hist_orp_cb(ev->data, ev->data_len);
-                break;
-            }
-            if (strcmp(topic, "liv24/hist/hhcc") == 0) {
-                if (s_hist_hhcc_cb) s_hist_hhcc_cb(ev->data, ev->data_len);
-                break;
-            }
-            if (strcmp(topic, "liv24/hist/th") == 0) {
-                if (s_hist_th_cb) s_hist_th_cb(ev->data, ev->data_len);
-                break;
-            }
-            if (strcmp(topic, "liv24/hist/leak") == 0) {
-                if (s_hist_leak_cb) s_hist_leak_cb(ev->data, ev->data_len);
-                break;
-            }
-            if (strcmp(topic, "liv24/logo/url") == 0) {
+            if (strcmp(topic, T_LOGO_URL) == 0) {
                 if (s_logo_url_cb && ev->data_len > 0) {
                     char url[256] = {};
                     int ulen = ev->data_len < (int)sizeof(url) - 1
@@ -117,8 +85,8 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
             }
 
             int relay_idx = -1;
-            if      (strcmp(topic, "liv24/relay/1/set") == 0) relay_idx = 0;
-            else if (strcmp(topic, "liv24/relay/2/set") == 0) relay_idx = 1;
+            if      (strcmp(topic, T_RELAY1_SET) == 0) relay_idx = 0;
+            else if (strcmp(topic, T_RELAY2_SET) == 0) relay_idx = 1;
             if (relay_idx < 0) break;
 
             bool on = (ev->data_len >= 2 &&
@@ -163,23 +131,25 @@ static void start_mqtt_client(void)
 
 static void mqtt_start_task(void *arg)
 {
-#ifdef STATIC_GW_ADDR
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock >= 0) {
-        struct timeval tv = {.tv_sec = 5, .tv_usec = 0};
-        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-        struct sockaddr_in gw = {};
-        gw.sin_family = AF_INET;
-        gw.sin_port   = htons(80);
-        ip4addr_aton(STATIC_GW_ADDR, (ip4_addr_t *)&gw.sin_addr);
-        bool ok = (connect(sock, (struct sockaddr *)&gw, sizeof(gw)) == 0);
-        close(sock);
-        if (ok)
-            ESP_LOGI(TAG, "  gateway probe PASS — ARP cache warm, starting MQTT");
-        else
-            ESP_LOGW(TAG, "  gateway probe FAIL — Ethernet RX may be broken");
+    char gw_str[16];
+    eth_get_net_gw(gw_str, sizeof(gw_str));
+    if (gw_str[0]) {
+        int sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (sock >= 0) {
+            struct timeval tv = {.tv_sec = 5, .tv_usec = 0};
+            setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+            struct sockaddr_in gw = {};
+            gw.sin_family = AF_INET;
+            gw.sin_port   = htons(80);
+            ip4addr_aton(gw_str, (ip4_addr_t *)&gw.sin_addr);
+            bool ok = (connect(sock, (struct sockaddr *)&gw, sizeof(gw)) == 0);
+            close(sock);
+            if (ok)
+                ESP_LOGI(TAG, "  gateway probe PASS — ARP cache warm, starting MQTT");
+            else
+                ESP_LOGW(TAG, "  gateway probe FAIL — Ethernet RX may be broken");
+        }
     }
-#endif
     start_mqtt_client();
     vTaskDelete(NULL);
 }
@@ -193,25 +163,26 @@ static void eth_got_ip_handler(void *arg, esp_event_base_t base,
     ESP_LOGI(TAG, "Ethernet IP: " IPSTR " — starting MQTT client",
              IP2STR(&ev->ip_info.ip));
 
-#if defined(STATIC_IP_ADDR) && defined(STATIC_DNS_ADDR)
-    // Set DNS here (in IP event) so it's configured right before MQTT resolves
-    esp_netif_dns_info_t dns = {};
-    dns.ip.type = ESP_IPADDR_TYPE_V4;
-    ip4addr_aton(STATIC_DNS_ADDR, (ip4_addr_t *)&dns.ip.u_addr.ip4);
-    esp_netif_set_dns_info(ev->esp_netif, ESP_NETIF_DNS_MAIN, &dns);
-    ip4addr_aton("8.8.8.8", (ip4_addr_t *)&dns.ip.u_addr.ip4);
-    esp_netif_set_dns_info(ev->esp_netif, ESP_NETIF_DNS_BACKUP, &dns);
-    ESP_LOGI(TAG, "DNS set: primary=" STATIC_DNS_ADDR " backup=8.8.8.8");
-#elif defined(STATIC_IP_ADDR)
-    // Fallback: use gateway as DNS + Google backup
-    esp_netif_dns_info_t dns = {};
-    dns.ip.type = ESP_IPADDR_TYPE_V4;
-    ip4addr_aton(STATIC_GW_ADDR, (ip4_addr_t *)&dns.ip.u_addr.ip4);
-    esp_netif_set_dns_info(ev->esp_netif, ESP_NETIF_DNS_MAIN, &dns);
-    ip4addr_aton("8.8.8.8", (ip4_addr_t *)&dns.ip.u_addr.ip4);
-    esp_netif_set_dns_info(ev->esp_netif, ESP_NETIF_DNS_BACKUP, &dns);
-    ESP_LOGI(TAG, "DNS set: primary=" STATIC_GW_ADDR " backup=8.8.8.8");
-#endif
+    if (s_ip_cb) {
+        char ip_str[16];
+        snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ev->ip_info.ip));
+        s_ip_cb(ip_str);
+    }
+
+    {
+        char gw_str[16];
+        eth_get_net_gw(gw_str, sizeof(gw_str));
+        if (gw_str[0]) {
+            // Static IP — use derived gateway as primary DNS, Google as backup
+            esp_netif_dns_info_t dns = {};
+            dns.ip.type = ESP_IPADDR_TYPE_V4;
+            ip4addr_aton(gw_str, (ip4_addr_t *)&dns.ip.u_addr.ip4);
+            esp_netif_set_dns_info(ev->esp_netif, ESP_NETIF_DNS_MAIN, &dns);
+            ip4addr_aton("8.8.8.8", (ip4_addr_t *)&dns.ip.u_addr.ip4);
+            esp_netif_set_dns_info(ev->esp_netif, ESP_NETIF_DNS_BACKUP, &dns);
+            ESP_LOGI(TAG, "DNS set: primary=%s backup=8.8.8.8", gw_str);
+        }
+    }
 
     // Sync time via NTP — Bangkok timezone (UTC+7)
     setenv("TZ", "ICT-7", 1);
@@ -257,14 +228,51 @@ static void ip_poll_task(void *arg)
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-void wifi_mqtt_init(const char *broker_uri)
+void wifi_mqtt_init(const char *broker_uri_fallback)
 {
-    strncpy(s_broker_uri, broker_uri, sizeof(s_broker_uri) - 1);
+    // Build device ID from base MAC (lazy-safe: get_device_id() may already have it)
+    if (s_device_id[0] == '\0') {
+        uint8_t mac[6];
+        esp_read_mac(mac, ESP_MAC_BASE);
+        snprintf(s_device_id, sizeof(s_device_id), "%02x%02x%02x%02x%02x%02x",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    }
+    snprintf(s_topic_prefix, sizeof(s_topic_prefix), "esp32_p4_86/%s", s_device_id);
+
+    snprintf(T_RELAY1_SET,   sizeof(T_RELAY1_SET),   "%s/relay/1/set",   s_topic_prefix);
+    snprintf(T_RELAY2_SET,   sizeof(T_RELAY2_SET),   "%s/relay/2/set",   s_topic_prefix);
+    snprintf(T_LOGO_URL,     sizeof(T_LOGO_URL),     "%s/logo/url",      s_topic_prefix);
+    snprintf(T_TEST_ALERT,   sizeof(T_TEST_ALERT),   "%s/test/alert",    s_topic_prefix);
+    snprintf(T_SENSORS,      sizeof(T_SENSORS),      "%s/sensors",       s_topic_prefix);
+    snprintf(T_RELAY1_STATE, sizeof(T_RELAY1_STATE), "%s/relay/1/state", s_topic_prefix);
+    snprintf(T_RELAY2_STATE, sizeof(T_RELAY2_STATE), "%s/relay/2/state", s_topic_prefix);
+
+    ESP_LOGI(TAG, "Device ID: %s  prefix: %s", s_device_id, s_topic_prefix);
+
+    // Read custom broker from NVS; fall back to build-flag URI
+    {
+        char host[64] = "";
+        uint16_t port = 1883;
+        nvs_handle_t h;
+        if (nvs_open("mqtt_cfg", NVS_READONLY, &h) == ESP_OK) {
+            size_t len = sizeof(host);
+            nvs_get_str(h, "host", host, &len);
+            nvs_get_u16(h, "port", &port);
+            nvs_close(h);
+        }
+        if (host[0]) {
+            snprintf(s_broker_uri, sizeof(s_broker_uri), "mqtt://%s:%u", host, port);
+            ESP_LOGI(TAG, "MQTT broker from NVS: %s", s_broker_uri);
+        } else {
+            strncpy(s_broker_uri, broker_uri_fallback, sizeof(s_broker_uri) - 1);
+        }
+    }
+
     // esp_netif_init() + esp_event_loop_create_default() called once in app_main.
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP,
                                                eth_got_ip_handler, NULL));
     xTaskCreate(ip_poll_task, "ip_poll", 3072, NULL, 3, NULL);
-    ESP_LOGI(TAG, "MQTT ready — broker: %s (waiting for Ethernet IP)", broker_uri);
+    ESP_LOGI(TAG, "MQTT ready — broker: %s (waiting for Ethernet IP)", s_broker_uri);
 }
 
 void wifi_mqtt_set_relay_cb(void (*cb)(int idx, bool on))
@@ -277,35 +285,9 @@ void wifi_mqtt_set_logo_url_cb(void (*cb)(const char *url))
     s_logo_url_cb = cb;
 }
 
-void wifi_mqtt_set_history_cb(void (*cb24h)(const char *d, int len),
-                              void (*cb7d )(const char *d, int len))
-{
-    s_hist_24h_cb = cb24h;
-    s_hist_7d_cb  = cb7d;
-}
-
 void wifi_mqtt_set_test_alert_cb(void (*cb)(const char *json, int len))
 {
     s_test_alert_cb = cb;
-}
-
-void wifi_mqtt_set_flora_cb(void (*cb)(const char *json, int len))
-{
-    s_flora_cb = cb;
-}
-
-void wifi_mqtt_set_hist_sensor_cbs(
-    void (*ec_cb  )(const char *d, int len),
-    void (*orp_cb )(const char *d, int len),
-    void (*hhcc_cb)(const char *d, int len),
-    void (*th_cb  )(const char *d, int len),
-    void (*leak_cb)(const char *d, int len))
-{
-    s_hist_ec_cb   = ec_cb;
-    s_hist_orp_cb  = orp_cb;
-    s_hist_hhcc_cb = hhcc_cb;
-    s_hist_th_cb   = th_cb;
-    s_hist_leak_cb = leak_cb;
 }
 
 bool wifi_mqtt_is_connected(void)
@@ -316,8 +298,7 @@ bool wifi_mqtt_is_connected(void)
 void wifi_mqtt_publish_relay_state(int idx, bool on)
 {
     if (!s_mqtt_ready) return;
-    char topic[32];
-    snprintf(topic, sizeof(topic), "liv24/relay/%d/state", idx + 1);
+    const char *topic = (idx == 0) ? T_RELAY1_STATE : T_RELAY2_STATE;
     esp_mqtt_client_publish(s_mqtt, topic, on ? "ON" : "OFF", 0, 1, 1);
 }
 
@@ -327,38 +308,24 @@ void wifi_mqtt_publish_sensors(float temp, float hum, int sound,
     if (!s_mqtt_ready) return;
     char payload[128];
     snprintf(payload, sizeof(payload),
-             "{\"temp\":%.1f,\"hum\":%.1f,\"sound\":%d,\"pm25\":%.1f,\"pm10\":%.1f}",
+             "{\"temperature\":%.1f,\"humidity\":%.1f,\"sound\":%d,\"pm2_5\":%.1f,\"pm10\":%.1f}",
              temp, hum, sound, pm25, pm10);
-    esp_mqtt_client_publish(s_mqtt, "liv24/sensors", payload, 0, 0, 0);
+    esp_mqtt_client_publish(s_mqtt, T_SENSORS, payload, 0, 0, 0);
 }
 
-void wifi_mqtt_publish_ec(float ec)
+const char *wifi_mqtt_get_device_id(void)
 {
-    if (!s_mqtt_ready) return;
-    char payload[48];
-    snprintf(payload, sizeof(payload), "{\"ec\":%.1f}", ec);
-    esp_mqtt_client_publish(s_mqtt, "liv24/ec", payload, 0, 0, 0);
+    if (s_device_id[0] == '\0') {
+        uint8_t mac[6];
+        esp_read_mac(mac, ESP_MAC_BASE);
+        snprintf(s_device_id, sizeof(s_device_id), "%02x%02x%02x%02x%02x%02x",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    }
+    return s_device_id;
 }
 
-void wifi_mqtt_publish_leak(bool alarm)
+void wifi_mqtt_set_ip_cb(void (*cb)(const char *ip))
 {
-    if (!s_mqtt_ready) return;
-    esp_mqtt_client_publish(s_mqtt, "liv24/leak",
-        alarm ? "{\"leak\":true}" : "{\"leak\":false}", 0, 0, 0);
+    s_ip_cb = cb;
 }
 
-void wifi_mqtt_publish_th(float temp, float hum)
-{
-    if (!s_mqtt_ready) return;
-    char payload[64];
-    snprintf(payload, sizeof(payload), "{\"temp\":%.1f,\"hum\":%.1f}", temp, hum);
-    esp_mqtt_client_publish(s_mqtt, "liv24/th", payload, 0, 0, 0);
-}
-
-void wifi_mqtt_publish_orp(float orp, float temp)
-{
-    if (!s_mqtt_ready) return;
-    char payload[64];
-    snprintf(payload, sizeof(payload), "{\"orp\":%.1f,\"temp\":%.1f}", orp, temp);
-    esp_mqtt_client_publish(s_mqtt, "liv24/orp", payload, 0, 0, 0);
-}

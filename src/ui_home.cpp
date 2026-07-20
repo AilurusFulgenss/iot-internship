@@ -4,6 +4,7 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "cJSON.h"
+#include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <time.h>
@@ -24,7 +25,7 @@ static lv_obj_t *lbl_hum_h    = NULL;
 // Room status card — configure per device
 #define ROOM_STATUS_ID   "M-MTG1"
 #define ROOM_STATUS_NAME "Meeting Room 1"
-#define HA_BASE_URL      "http://192.168.1.111:8123"
+#define HA_BASE_URL_DEFAULT "http://10.24.1.104:8123"
 #define HA_CALENDAR_ID   "calendar.meeting_room_1"
 #define HA_TOKEN         "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiI0YTg1NTFiNTcwZWM0NmQ3OWE3YmVlMDYyYjg5YmU2ZSIsImlhdCI6MTc4MzM5MjMyMSwiZXhwIjoyMDk4NzUyMzIxfQ.TgtuxlkOBuvaDkN_dGVD83ehKfWDpfbJ0iVugpBPOIY"
 #define RS_BUF           4096
@@ -202,6 +203,18 @@ static void room_status_task(void *)
 {
     ESP_LOGI(TAG, "room_status_task started — waiting 15s for NTP");
     vTaskDelay(pdMS_TO_TICKS(15000)); // wait for network + NTP
+
+    char ha_base_url[72] = HA_BASE_URL_DEFAULT;
+    {
+        nvs_handle_t h;
+        if (nvs_open("ha_cfg", NVS_READONLY, &h) == ESP_OK) {
+            size_t len = sizeof(ha_base_url);
+            nvs_get_str(h, "url", ha_base_url, &len);
+            nvs_close(h);
+        }
+    }
+    ESP_LOGI(TAG, "HA base URL: %s", ha_base_url);
+
     for (;;) {
         time_t now_t;
         struct tm t;
@@ -219,9 +232,9 @@ static void room_status_task(void *)
         strftime(date, sizeof(date), "%Y-%m-%d", &t);
         char url[256];
         snprintf(url, sizeof(url),
-            HA_BASE_URL "/api/calendars/" HA_CALENDAR_ID
+            "%s/api/calendars/" HA_CALENDAR_ID
             "?start=%sT00:00:00%%2B07:00&end=%sT23:59:59%%2B07:00",
-            date, date);
+            ha_base_url, date, date);
 
         s_rs_len = 0; memset(s_rs_buf, 0, RS_BUF);
         esp_http_client_config_t cfg = {};

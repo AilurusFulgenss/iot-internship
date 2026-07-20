@@ -13,15 +13,13 @@
 #include "btn_mode.h"
 #include "ui_user.h"
 #include "ui_dev.h"
-#include "ui_exec.h"
-#include "ui_exec_detail.h"
 #include "ui_pm.h"
 #include "calib.h"
 #include "eth_upload.h"
 #include "wifi_mqtt.h"
-#include "history.h"
 #include "ui_alert.h"
 #include "ui_home.h"
+#include "ui_pin.h"
 #include "sensor_config.h"
 #include "cJSON.h"
 #include <math.h>
@@ -292,30 +290,6 @@ static uint16_t crc16(const uint8_t *buf, int len)
     return crc;
 }
 
-// Sent once at boot when CWT-TH04S is selected: changes its baud from 4800 → 9600.
-// After the sensor stores the new baud in its flash, every subsequent boot
-// will timeout here (sensor is already at 9600 and won't hear 4800 traffic),
-// then re-init at 9600 and continue normally. ~500 ms penalty per boot.
-static void cwt_th_set_baud_9600(void)
-{
-    uart_set_baudrate(RS485_UART, 4800);
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    // FC06 write reg 0x07D1 = 0x0002 (baud 9600)
-    uint8_t req[8] = {0x01, 0x06, 0x07, 0xD1, 0x00, 0x02, 0x00, 0x00};
-    uint16_t crc = crc16(req, 6);
-    req[6] = crc & 0xFF;
-    req[7] = crc >> 8;
-
-    uart_flush_input(RS485_UART);
-    uart_write_bytes(RS485_UART, req, sizeof(req));
-    vTaskDelay(pdMS_TO_TICKS(300));
-
-    uart_set_baudrate(RS485_UART, MODBUS_BAUD);
-    vTaskDelay(pdMS_TO_TICKS(100));
-    ESP_LOGI(TAG, "CWT-TH04S: baud set to 9600");
-}
-
 static void rs485_init(void)
 {
     uart_config_t cfg = {
@@ -401,7 +375,6 @@ static void sensor_read_task(void *arg)
                 ui_user_update(t_cal, h_cal, p25_cal, p10_cal, (int)s_cal);
                 ui_pm_update(t_cal, h_cal, p25_cal, p10_cal, (float)s_cal);
                 ui_dev_update_sn300(temp, hum, (float)snd, pm25, pm10);
-                ui_exec_update_pm(t_cal, h_cal, p25_cal, p10_cal);
                 ui_home_update_sensors(p25_cal, t_cal, h_cal);
                 ui_alert_check(t_cal, h_cal, p25_cal, p10_cal, s_cal);
                 bsp_display_unlock();
@@ -409,70 +382,9 @@ static void sensor_read_task(void *arg)
                 wifi_mqtt_publish_sensors(t_cal, h_cal, (int)s_cal, p25_cal, p10_cal);
                 break;
             }
-            case SENSOR_TYPE_EC: {
-                float ec     = (m->idx_ec >= 0) ? regs[m->idx_ec] / m->scale : NAN;
-                float ec_cal = calib_apply(ec, &g_calib.ec);
-                ESP_LOGI(TAG, "EC=%.1f uS/cm (cal=%.1f)", ec, ec_cal);
-
-                bsp_display_lock(0);
-                ui_alert_set_mqtt_status(wifi_mqtt_is_connected());
-                ui_user_update_ec(ec_cal);
-                ui_exec_update_ec(ec_cal);
-                ui_dev_update_ec(ec);
-                bsp_display_unlock();
-
-                wifi_mqtt_publish_ec(ec_cal);
+            default:
+                ESP_LOGW(TAG, "sensor: unsupported type %d", m->type);
                 break;
-            }
-            case SENSOR_TYPE_LEAK: {
-                bool alarm = (m->idx_leak >= 0) ? (regs[m->idx_leak] == 0x0002) : false;
-                ESP_LOGI(TAG, "Leak=%s (raw=0x%04X)", alarm ? "ALARM" : "NORMAL",
-                         m->idx_leak >= 0 ? regs[m->idx_leak] : 0);
-
-                bsp_display_lock(0);
-                ui_alert_set_mqtt_status(wifi_mqtt_is_connected());
-                ui_user_update_leak(alarm);
-                ui_exec_update_leak(alarm);
-                bsp_display_unlock();
-
-                wifi_mqtt_publish_leak(alarm);
-                break;
-            }
-            case SENSOR_TYPE_TH: {
-                float temp     = (m->idx_temp >= 0) ? (int16_t)regs[m->idx_temp] / m->scale : NAN;
-                float hum      = (m->idx_hum  >= 0) ? regs[m->idx_hum]           / m->scale : NAN;
-                float t_cal    = calib_apply(temp, &g_calib.th_temp);
-                float h_cal    = calib_apply(hum,  &g_calib.th_hum);
-                ESP_LOGI(TAG, "TH: T=%.1fC H=%.1f%% (cal T=%.1f H=%.1f)", temp, hum, t_cal, h_cal);
-
-                bsp_display_lock(0);
-                ui_alert_set_mqtt_status(wifi_mqtt_is_connected());
-                ui_user_update_th(t_cal, h_cal);
-                ui_exec_update_th(t_cal, h_cal);
-                ui_dev_update_th(temp, hum);
-                ui_home_update_sensors(NAN, t_cal, h_cal);
-                bsp_display_unlock();
-
-                wifi_mqtt_publish_th(t_cal, h_cal);
-                break;
-            }
-            case SENSOR_TYPE_ORP: {
-                float orp      = (m->idx_orp  >= 0) ? (int16_t)regs[m->idx_orp]  / m->scale : NAN;
-                float temp     = (m->idx_temp >= 0) ? (int16_t)regs[m->idx_temp] / m->scale : NAN;
-                float orp_cal  = calib_apply(orp,  &g_calib.orp);
-                float t_cal    = calib_apply(temp, &g_calib.orp_temp);
-                ESP_LOGI(TAG, "ORP: %.1f mV T=%.1fC (cal ORP=%.1f T=%.1f)", orp, temp, orp_cal, t_cal);
-
-                bsp_display_lock(0);
-                ui_alert_set_mqtt_status(wifi_mqtt_is_connected());
-                ui_user_update_orp(orp_cal, t_cal);
-                ui_exec_update_orp(orp_cal, t_cal);
-                ui_dev_update_orp(orp, temp);
-                bsp_display_unlock();
-
-                wifi_mqtt_publish_orp(orp_cal, t_cal);
-                break;
-            }
             }
         } else {
             ESP_LOGW(TAG, "sensor: no response");
@@ -509,13 +421,10 @@ static void touch_nav_init(void)
         lv_obj_center(lbl);
     }
 
-    // ── DEV / EXEC hidden zones — 5-tap on top corners, no visible UI ───────
-    // top-left   × 5  → DEV (calibrate)
-    // top-center × 5  → EXEC (overview)
+    // ── DEV hidden zone — 5-tap top-left, no visible UI ─────────────────────
     {
-        struct TapZone { uint32_t t[5]; int n; app_mode_t mode; };
-        static TapZone tz_dev  = {{}, 0, MODE_DEV};
-        static TapZone tz_exec = {{}, 0, MODE_EXEC};
+        struct TapZone { uint32_t t[5]; int n; };
+        static TapZone tz_dev = {{}, 0};
 
         auto tap_cb = [](lv_event_t *e) {
             auto *tz     = static_cast<TapZone *>(lv_event_get_user_data(e));
@@ -526,16 +435,16 @@ static void touch_nav_init(void)
             tz->n++;
             if (tz->n >= 5) {
                 if (lv_tick_elaps(tz->t[0]) <= 3000)
-                    set_app_mode(tz->mode);
+                    ui_pin_show([]() { set_app_mode(MODE_DEV); });
                 tz->n = 0;
             }
         };
 
-        TapZone *zones[2]    = {&tz_dev, &tz_exec};
-        lv_align_t aligns[2] = {LV_ALIGN_TOP_LEFT, LV_ALIGN_TOP_MID};
-        int x_off[2]         = {0, 0};
-        int y_off[2]         = {0, 0};
-        for (int i = 0; i < 2; i++) {
+        TapZone *zones[1]    = {&tz_dev};
+        lv_align_t aligns[1] = {LV_ALIGN_TOP_LEFT};
+        int x_off[1]         = {0};
+        int y_off[1]         = {0};
+        for (int i = 0; i < 1; i++) {
             lv_obj_t *z = lv_obj_create(scr_user);
             lv_obj_set_size(z, 90, 90);
             lv_obj_align(z, aligns[i], x_off[i], y_off[i]);
@@ -548,9 +457,9 @@ static void touch_nav_init(void)
         }
     }
 
-    // ── ← USER exit button on DEV and EXEC screens ───────────────────────────
-    lv_obj_t *mode_scrns[] = {scr_dev, scr_exec};
-    for (int i = 0; i < 2; i++) {
+    // ── ← USER exit button on DEV screen ─────────────────────────────────────
+    lv_obj_t *mode_scrns[] = {scr_dev};
+    for (int i = 0; i < 1; i++) {
         lv_obj_t *btn = lv_btn_create(mode_scrns[i]);
         lv_obj_set_size(btn, 88, 40);
         lv_obj_align(btn, LV_ALIGN_TOP_RIGHT, -8, 12);
@@ -577,9 +486,7 @@ void on_short_press(void)
 {
     bsp_display_lock(0);
     lv_obj_t *active = lv_scr_act();
-    if (active == scr_exec) {
-        // EXEC mode — short press does nothing
-    } else if (active == scr_home) {
+    if (active == scr_home) {
         // Home has no nav button — do nothing
     } else if (active == scr_user) {
         lv_scr_load_anim(scr_pm, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
@@ -603,9 +510,6 @@ void on_mode_changed(app_mode_t new_mode)
             break;
         case MODE_DEV:
             lv_scr_load_anim(scr_dev,  LV_SCR_LOAD_ANIM_MOVE_LEFT, 400, 0, false);
-            break;
-        case MODE_EXEC:
-            lv_scr_load_anim(scr_exec, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
             break;
     }
     bsp_display_unlock();
@@ -646,77 +550,6 @@ static void on_test_alert(const char *json, int len)
     }, "alert_clr", 2048, NULL, 2, NULL);
 }
 
-static void on_hist_24h(const char *d, int len)
-{
-    hist_parse_24h(d, len);
-    if (bsp_display_lock(0)) {
-        ui_pm_refresh_history();
-        bsp_display_unlock();
-    }
-}
-
-static void on_hist_7d(const char *d, int len)
-{
-    hist_parse_7d(d, len);
-    if (bsp_display_lock(0)) {
-        ui_exec_detail_refresh();
-        bsp_display_unlock();
-    }
-}
-
-static void on_hist_ec(const char *d, int len)
-{
-    hist_parse_ec(d, len);
-    if (bsp_display_lock(0)) { ui_exec_detail_refresh(); bsp_display_unlock(); }
-}
-
-static void on_hist_orp(const char *d, int len)
-{
-    hist_parse_orp(d, len);
-    if (bsp_display_lock(0)) { ui_exec_detail_refresh(); bsp_display_unlock(); }
-}
-
-static void on_hist_hhcc(const char *d, int len)
-{
-    hist_parse_hhcc(d, len);
-    if (bsp_display_lock(0)) { ui_exec_detail_refresh(); bsp_display_unlock(); }
-}
-
-static void on_hist_th(const char *d, int len)
-{
-    hist_parse_th(d, len);
-    if (bsp_display_lock(0)) { ui_exec_detail_refresh(); bsp_display_unlock(); }
-}
-
-static void on_hist_leak(const char *d, int len)
-{
-    hist_parse_leak(d, len);
-    if (bsp_display_lock(0)) { ui_exec_detail_refresh(); bsp_display_unlock(); }
-}
-
-static void on_flora(const char *json, int len)
-{
-    char buf[128];
-    int n = len < (int)sizeof(buf) - 1 ? len : (int)sizeof(buf) - 1;
-    memcpy(buf, json, n); buf[n] = '\0';
-
-    cJSON *root = cJSON_Parse(buf);
-    if (!root) return;
-
-    float temp      = cJSON_IsNumber(cJSON_GetObjectItem(root, "temp"))      ? (float)cJSON_GetObjectItem(root, "temp")->valuedouble      : NAN;
-    float moisture  = cJSON_IsNumber(cJSON_GetObjectItem(root, "moisture"))  ? (float)cJSON_GetObjectItem(root, "moisture")->valuedouble  : NAN;
-    float light     = cJSON_IsNumber(cJSON_GetObjectItem(root, "light"))     ? (float)cJSON_GetObjectItem(root, "light")->valuedouble     : NAN;
-    float fertility = cJSON_IsNumber(cJSON_GetObjectItem(root, "fertility")) ? (float)cJSON_GetObjectItem(root, "fertility")->valuedouble : NAN;
-    float battery   = cJSON_IsNumber(cJSON_GetObjectItem(root, "battery"))   ? (float)cJSON_GetObjectItem(root, "battery")->valuedouble   : NAN;
-    cJSON_Delete(root);
-
-
-    if (bsp_display_lock(0)) {
-        ui_user_update_hhcc(temp, moisture, light, fertility, battery);
-        ui_exec_update_hhcc(temp, moisture, light, fertility, battery);
-        bsp_display_unlock();
-    }
-}
 
 static void logo_url_received(const char *url)
 {
@@ -747,11 +580,6 @@ extern "C" void app_main(void)
     sensor_config_init();
     calib_init();
     rs485_init();
-
-    // CWT-TH04S ships at 4800 baud — change to 9600 on first boot with this model
-    if (sensor_config_get().model_idx == 3) {
-        cwt_th_set_baud_9600();
-    }
 
     // Relay GPIO init — default OFF
     gpio_config_t relay_cfg = {};
@@ -831,8 +659,6 @@ extern "C" void app_main(void)
     ui_user_create();
     ui_pm_create();
     ui_dev_create();
-    ui_exec_create();
-    ui_exec_detail_create();
     ui_home_create();
     touch_nav_init();
     ui_alert_init();
@@ -854,10 +680,13 @@ extern "C" void app_main(void)
     // IP_EVENT_ETH_GOT_IP handler must already be registered when it fires.
     wifi_mqtt_set_relay_cb(relay_set_state);
     wifi_mqtt_set_logo_url_cb(logo_url_received);
-    wifi_mqtt_set_history_cb(on_hist_24h, on_hist_7d);
     wifi_mqtt_set_test_alert_cb(on_test_alert);
-    wifi_mqtt_set_flora_cb(on_flora);
-    wifi_mqtt_set_hist_sensor_cbs(on_hist_ec, on_hist_orp, on_hist_hhcc, on_hist_th, on_hist_leak);
+    wifi_mqtt_set_ip_cb([](const char *ip) {
+        if (bsp_display_lock(0)) {
+            ui_dev_update_network(ip);
+            bsp_display_unlock();
+        }
+    });
     wifi_mqtt_init(MQTT_BROKER_URI);
     eth_start_background();
 
