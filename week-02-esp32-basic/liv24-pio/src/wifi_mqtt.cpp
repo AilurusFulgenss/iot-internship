@@ -21,9 +21,8 @@ static const char *TAG = "MQTT";
 static esp_mqtt_client_handle_t s_mqtt       = NULL;
 static volatile bool             s_mqtt_ready = false;
 static void (*s_relay_cb)(int, bool)             = NULL;
+static void (*s_relay_mode_cb)(bool)             = NULL;
 static void (*s_logo_url_cb)(const char *)       = NULL;
-static void (*s_hist_24h_cb)(const char *, int)  = NULL;
-static void (*s_hist_7d_cb )(const char *, int)  = NULL;
 static void (*s_test_alert_cb)(const char *, int) = NULL;
 static char s_broker_uri[128];
 
@@ -34,13 +33,13 @@ static void (*s_ip_cb)(const char *) = NULL;
 // Prebuilt topic strings (filled in wifi_mqtt_init)
 static char T_RELAY1_SET[52]   = {};
 static char T_RELAY2_SET[52]   = {};
+static char T_RELAY_MODE[52]   = {};
 static char T_LOGO_URL[52]     = {};
-static char T_HIST_24H[52]     = {};
-static char T_HIST_7D[52]      = {};
 static char T_TEST_ALERT[52]   = {};
-static char T_SENSORS[52]      = {};
-static char T_RELAY1_STATE[52] = {};
-static char T_RELAY2_STATE[52] = {};
+static char T_SENSORS[52]          = {};
+static char T_RELAY1_STATE[52]     = {};
+static char T_RELAY2_STATE[52]     = {};
+static char T_RELAY_MODE_STATE[56] = {};
 
 // ── MQTT events ───────────────────────────────────────────────────────────────
 
@@ -55,9 +54,8 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
         s_mqtt_ready = true;
         esp_mqtt_client_subscribe(s_mqtt, T_RELAY1_SET,   0);
         esp_mqtt_client_subscribe(s_mqtt, T_RELAY2_SET,   0);
+        esp_mqtt_client_subscribe(s_mqtt, T_RELAY_MODE,   1);
         esp_mqtt_client_subscribe(s_mqtt, T_LOGO_URL,     1);
-        esp_mqtt_client_subscribe(s_mqtt, T_HIST_24H,     1);
-        esp_mqtt_client_subscribe(s_mqtt, T_HIST_7D,      1);
         esp_mqtt_client_subscribe(s_mqtt, T_TEST_ALERT,   0);
         // broker delivers retained messages automatically on subscribe — no request needed
         break;
@@ -75,16 +73,15 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
                        ? ev->topic_len : (int)sizeof(topic) - 1;
             memcpy(topic, ev->topic, tlen);
 
-            if (strcmp(topic, T_HIST_24H) == 0) {
-                if (s_hist_24h_cb) s_hist_24h_cb(ev->data, ev->data_len);
-                break;
-            }
-            if (strcmp(topic, T_HIST_7D) == 0) {
-                if (s_hist_7d_cb) s_hist_7d_cb(ev->data, ev->data_len);
-                break;
-            }
             if (strcmp(topic, T_TEST_ALERT) == 0) {
                 if (s_test_alert_cb) s_test_alert_cb(ev->data, ev->data_len);
+                break;
+            }
+            if (strcmp(topic, T_RELAY_MODE) == 0) {
+                bool remote = (ev->data_len >= 6 &&
+                               strncmp(ev->data, "remote", 6) == 0);
+                ESP_LOGI(TAG, "Relay mode -> %s", remote ? "remote" : "local");
+                if (s_relay_mode_cb) s_relay_mode_cb(remote);
                 break;
             }
             if (strcmp(topic, T_LOGO_URL) == 0) {
@@ -255,13 +252,13 @@ void wifi_mqtt_init(const char *broker_uri_fallback)
 
     snprintf(T_RELAY1_SET,   sizeof(T_RELAY1_SET),   "%s/relay/1/set",   s_topic_prefix);
     snprintf(T_RELAY2_SET,   sizeof(T_RELAY2_SET),   "%s/relay/2/set",   s_topic_prefix);
+    snprintf(T_RELAY_MODE,   sizeof(T_RELAY_MODE),   "%s/relay/mode",    s_topic_prefix);
     snprintf(T_LOGO_URL,     sizeof(T_LOGO_URL),     "%s/logo/url",      s_topic_prefix);
-    snprintf(T_HIST_24H,     sizeof(T_HIST_24H),     "%s/history/24h",   s_topic_prefix);
-    snprintf(T_HIST_7D,      sizeof(T_HIST_7D),      "%s/history/7d",    s_topic_prefix);
     snprintf(T_TEST_ALERT,   sizeof(T_TEST_ALERT),   "%s/test/alert",    s_topic_prefix);
     snprintf(T_SENSORS,      sizeof(T_SENSORS),      "%s/sensors",       s_topic_prefix);
-    snprintf(T_RELAY1_STATE, sizeof(T_RELAY1_STATE), "%s/relay/1/state", s_topic_prefix);
-    snprintf(T_RELAY2_STATE, sizeof(T_RELAY2_STATE), "%s/relay/2/state", s_topic_prefix);
+    snprintf(T_RELAY1_STATE,     sizeof(T_RELAY1_STATE),     "%s/relay/1/state",    s_topic_prefix);
+    snprintf(T_RELAY2_STATE,     sizeof(T_RELAY2_STATE),     "%s/relay/2/state",    s_topic_prefix);
+    snprintf(T_RELAY_MODE_STATE, sizeof(T_RELAY_MODE_STATE), "%s/relay/mode/state", s_topic_prefix);
 
     ESP_LOGI(TAG, "Device ID: %s  prefix: %s", s_device_id, s_topic_prefix);
 
@@ -296,16 +293,14 @@ void wifi_mqtt_set_relay_cb(void (*cb)(int idx, bool on))
     s_relay_cb = cb;
 }
 
+void wifi_mqtt_set_relay_mode_cb(void (*cb)(bool remote))
+{
+    s_relay_mode_cb = cb;
+}
+
 void wifi_mqtt_set_logo_url_cb(void (*cb)(const char *url))
 {
     s_logo_url_cb = cb;
-}
-
-void wifi_mqtt_set_history_cb(void (*cb24h)(const char *d, int len),
-                              void (*cb7d )(const char *d, int len))
-{
-    s_hist_24h_cb = cb24h;
-    s_hist_7d_cb  = cb7d;
 }
 
 void wifi_mqtt_set_test_alert_cb(void (*cb)(const char *json, int len))
@@ -325,13 +320,20 @@ void wifi_mqtt_publish_relay_state(int idx, bool on)
     esp_mqtt_client_publish(s_mqtt, topic, on ? "ON" : "OFF", 0, 1, 1);
 }
 
+void wifi_mqtt_publish_relay_mode_state(bool remote)
+{
+    if (!s_mqtt_ready) return;
+    esp_mqtt_client_publish(s_mqtt, T_RELAY_MODE_STATE,
+                            remote ? "remote" : "local", 0, 1, 1);
+}
+
 void wifi_mqtt_publish_sensors(float temp, float hum, int sound,
                                float pm25, float pm10)
 {
     if (!s_mqtt_ready) return;
     char payload[128];
     snprintf(payload, sizeof(payload),
-             "{\"temp\":%.1f,\"hum\":%.1f,\"sound\":%d,\"pm25\":%.1f,\"pm10\":%.1f}",
+             "{\"temperature\":%.1f,\"humidity\":%.1f,\"sound\":%d,\"pm2_5\":%.1f,\"pm10\":%.1f}",
              temp, hum, sound, pm25, pm10);
     esp_mqtt_client_publish(s_mqtt, T_SENSORS, payload, 0, 0, 0);
 }

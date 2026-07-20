@@ -1,0 +1,114 @@
+title: LIV24 Control
+views:
+  - title: Automation
+    icon: mdi:auto-fix
+    path: automation
+    cards:
+      - type: horizontal-stack
+        cards:
+          - type: entity
+            entity: sensor.liv24_temperature
+            name: Temp
+          - type: entity
+            entity: sensor.liv24_humidity
+            name: Humid
+          - type: entity
+            entity: sensor.liv24_pm2_5
+            name: PM2.5
+          - type: entity
+            entity: sensor.liv24_sound
+            name: Sound
+
+      - type: entities
+        title: Relay Control Mode
+        entities:
+          - entity: input_boolean.liv24_relay_remote
+            name: Remote Mode (HA controls relay)
+          - entity: sensor.liv24_relay_mode
+            name: Device Confirmed Mode
+
+      - type: entities
+        title: Output 1
+        entities:
+          - entity: input_boolean.liv24_rule1_enabled
+            name: Enable Rule
+          - entity: input_select.liv24_rule1_var
+            name: Variable
+          - entity: input_select.liv24_rule1_condition
+            name: Condition
+          - entity: input_number.liv24_rule1_threshold
+            name: Threshold
+          - entity: input_select.liv24_rule1_output
+            name: Output
+          - entity: switch.liv24_relay_1
+            name: Relay 1
+          - entity: switch.liv24_relay_2
+            name: Relay 2
+
+      - type: entities
+        title: Output 2
+        entities:
+          - entity: input_boolean.liv24_rule2_enabled
+            name: Enable Rule
+          - entity: input_select.liv24_rule2_var
+            name: Variable
+          - entity: input_select.liv24_rule2_condition
+            name: Condition
+          - entity: input_number.liv24_rule2_threshold
+            name: Threshold
+          - entity: input_select.liv24_rule2_output
+            name: Output
+          - entity: switch.liv24_relay_1
+            name: Relay 1
+          - entity: switch.liv24_relay_2
+            name: Relay 2
+
+  - title: Booking
+    icon: mdi:calendar-clock
+    path: booking
+    cards:
+      - type: entity
+        entity: sensor.room_mtg1_status
+        name: MTG1 Status
+
+      - type: entities
+        title: MTG1 Schedule
+        entities:
+          - entity: input_datetime.room_mtg1_booking_start
+            name: Booking Start
+          - entity: input_datetime.room_mtg1_booking_end
+            name: Booking End
+          - entity: input_datetime.room_mtg1_pre_trigger
+            name: Pre-booking Trigger (AC on)
+          - entity: input_datetime.room_mtg1_post_trigger
+            name: Post-booking Trigger (cleanup)
+
+
+  - title: Sensors
+    icon: mdi:chart-line
+    path: sensors
+    cards:
+      - type: history-graph
+        title: Temperature and Humidity
+        hours_to_show: 6
+        entities:
+          - entity: sensor.liv24_temperature
+            name: Temperature
+          - entity: sensor.liv24_humidity
+            name: Humidity
+
+      - type: history-graph
+        title: Air Quality
+        hours_to_show: 6
+        entities:
+          - entity: sensor.liv24_pm2_5
+            name: PM2.5
+          - entity: sensor.liv24_pm10
+            name: PM10
+
+      - type: history-graph
+        title: Sound Level
+        hours_to_show: 6
+        entities:
+          - entity: sensor.liv24_sound
+            name: Sound

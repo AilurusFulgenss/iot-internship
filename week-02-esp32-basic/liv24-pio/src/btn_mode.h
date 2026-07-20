@@ -11,7 +11,6 @@
 typedef enum {
     MODE_USER = 0,   // default: public-facing UI
     MODE_DEV,        // developer: raw values + calibration
-    MODE_EXEC,       // executive: summary dashboard
 } app_mode_t;
 
 // Global mode — read anywhere, set only via set_app_mode()
@@ -20,8 +19,7 @@ extern volatile app_mode_t g_app_mode;
 // ─── Timing thresholds ────────────────────────────────────────────────────────
 
 #define HOLD_MS_DEV   7000   // hold 7 s  → MODE_DEV
-#define HOLD_MS_EXEC  10000  // hold 10 s → MODE_EXEC
-#define HOLD_MS_EXIT  3000   // hold 3 s from DEV/EXEC → back to USER
+#define HOLD_MS_EXIT  3000   // hold 3 s from DEV → back to USER
 #define DEBOUNCE_MS   50
 
 // ─── Public API ───────────────────────────────────────────────────────────────

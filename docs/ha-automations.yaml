@@ -1,0 +1,317 @@
+# LIV24 automations.yaml
+# Copy ทั้งไฟล์นี้ไปทับ /config/automations.yaml บน RPi แล้ว restart HA
+
+# ══════════════════════════════════════════════════════════════════
+# LIV24 — Sensor Alerts (Telegram + HA notification)
+# ══════════════════════════════════════════════════════════════════
+
+- alias: "LIV24 High Temperature Alert"
+  trigger:
+    - platform: numeric_state
+      entity_id: sensor.liv24_temperature
+      above: 35
+      for:
+        minutes: 2
+  action:
+    - service: persistent_notification.create
+      data:
+        title: "Temperature Alert"
+        message: "Temperature is {{ states('sensor.liv24_temperature') }}°C — above 35°C"
+        notification_id: "liv24_temp_high"
+    - service: telegram_bot.send_message
+      data:
+        chat_id: 8609599313
+        message: "⚠️ LIV24: Temp {{ states('sensor.liv24_temperature') }}°C เกิน 35°C"
+
+- alias: "LIV24 Low Humidity Alert"
+  trigger:
+    - platform: numeric_state
+      entity_id: sensor.liv24_humidity
+      below: 30
+      for:
+        minutes: 2
+  action:
+    - service: persistent_notification.create
+      data:
+        title: "Humidity Alert"
+        message: "Humidity is {{ states('sensor.liv24_humidity') }}% — below 30%"
+        notification_id: "liv24_hum_low"
+    - service: telegram_bot.send_message
+      data:
+        chat_id: 8609599313
+        message: "⚠️ LIV24: ความชื้น {{ states('sensor.liv24_humidity') }}% ต่ำกว่า 30%"
+
+- alias: "LIV24 High PM2.5 Alert"
+  trigger:
+    - platform: numeric_state
+      entity_id: sensor.liv24_pm2_5
+      above: 35.4
+      for:
+        minutes: 2
+  action:
+    - service: persistent_notification.create
+      data:
+        title: "Air Quality Alert"
+        message: "PM2.5 is {{ states('sensor.liv24_pm2_5') }} µg/m³ — Moderate or worse"
+        notification_id: "liv24_pm25_high"
+    - service: telegram_bot.send_message
+      data:
+        chat_id: 8609599313
+        message: "⚠️ LIV24: PM2.5 {{ states('sensor.liv24_pm2_5') }} µg/m³ — คุณภาพอากาศแย่"
+
+# ══════════════════════════════════════════════════════════════════
+# LIV24 — Relay Mode Sync
+# ══════════════════════════════════════════════════════════════════
+
+- alias: "LIV24 — Sync Relay Mode to Device"
+  description: "Publish local/remote mode to ESP32 whenever toggle changes. retain=true so ESP32 gets it on reconnect."
+  trigger:
+    - platform: state
+      entity_id: input_boolean.liv24_relay_remote
+  action:
+    - service: mqtt.publish
+      data:
+        topic: "esp32_p4_86/30eda0ea5d0f/relay/mode"
+        payload: >
+          {% if is_state('input_boolean.liv24_relay_remote', 'on') %}remote{% else %}local{% endif %}
+        retain: true
+        qos: 1
+
+- alias: "LIV24 — Auto Enable Remote When Rule Enabled"
+  description: "Enabling Rule 1 or Rule 2 automatically turns on Remote Mode. Disabling both turns it off."
+  trigger:
+    - platform: state
+      entity_id:
+        - input_boolean.liv24_rule1_enabled
+        - input_boolean.liv24_rule2_enabled
+  action:
+    - choose:
+        - conditions:
+            - condition: template
+              value_template: >
+                {{ is_state('input_boolean.liv24_rule1_enabled', 'on') or
+                   is_state('input_boolean.liv24_rule2_enabled', 'on') }}
+          sequence:
+            - service: input_boolean.turn_on
+              target:
+                entity_id: input_boolean.liv24_relay_remote
+        - conditions:
+            - condition: template
+              value_template: >
+                {{ is_state('input_boolean.liv24_rule1_enabled', 'off') and
+                   is_state('input_boolean.liv24_rule2_enabled', 'off') }}
+          sequence:
+            - service: input_boolean.turn_off
+              target:
+                entity_id: input_boolean.liv24_relay_remote
+  mode: single
+
+- alias: "LIV24 — Disable Rules When Remote Off"
+  description: "Turning off Remote Mode manually also disables both automation rules."
+  trigger:
+    - platform: state
+      entity_id: input_boolean.liv24_relay_remote
+      to: "off"
+  action:
+    - service: input_boolean.turn_off
+      target:
+        entity_id:
+          - input_boolean.liv24_rule1_enabled
+          - input_boolean.liv24_rule2_enabled
+  mode: single
+
+# ══════════════════════════════════════════════════════════════════
+# LIV24 — Relay Automation Rules (controlled via LIV24 Control dashboard)
+# ══════════════════════════════════════════════════════════════════
+
+- alias: "LIV24 Rule 1 — Relay Control"
+  description: "ประเมิน sensor vs threshold แล้ว ON/OFF relay ตาม rule ที่ตั้งไว้บน dashboard"
+  trigger:
+    - platform: state
+      entity_id:
+        - sensor.liv24_temperature
+        - sensor.liv24_humidity
+        - sensor.liv24_pm2_5
+        - sensor.liv24_sound
+    - platform: state
+      entity_id:
+        - input_select.liv24_rule1_var
+        - input_select.liv24_rule1_condition
+        - input_number.liv24_rule1_threshold
+        - input_select.liv24_rule1_output
+        - input_boolean.liv24_rule1_enabled
+  condition:
+    - condition: state
+      entity_id: input_boolean.liv24_relay_remote
+      state: "on"
+    - condition: state
+      entity_id: input_boolean.liv24_rule1_enabled
+      state: "on"
+  action:
+    - variables:
+        sensor_val: >
+          {% set v = states('input_select.liv24_rule1_var') %}
+          {% if v == 'temperature' %}{{ states('sensor.liv24_temperature') | float(0) }}
+          {% elif v == 'humidity' %}{{ states('sensor.liv24_humidity') | float(0) }}
+          {% elif v == 'pm2_5' %}{{ states('sensor.liv24_pm2_5') | float(0) }}
+          {% elif v == 'sound' %}{{ states('sensor.liv24_sound') | float(0) }}
+          {% else %}0{% endif %}
+        threshold: "{{ states('input_number.liv24_rule1_threshold') | float(0) }}"
+        cond: "{{ states('input_select.liv24_rule1_condition') }}"
+        rule_met: >
+          {% set sv = sensor_val | float(0) %}
+          {% set th = threshold | float(0) %}
+          {% if cond == '>=' %}{{ sv >= th }}
+          {% elif cond == '<=' %}{{ sv <= th }}
+          {% elif cond == '==' %}{{ (sv - th) | abs < 0.01 }}
+          {% elif cond == '>' %}{{ sv > th }}
+          {% elif cond == '<' %}{{ sv < th }}
+          {% else %}false{% endif %}
+        relay_entity: >
+          {% if states('input_select.liv24_rule1_output') == 'Relay 1' %}
+            switch.liv24_relay_1
+          {% else %}
+            switch.liv24_relay_2
+          {% endif %}
+    - service: >
+        {% if rule_met | bool %}switch.turn_on{% else %}switch.turn_off{% endif %}
+      target:
+        entity_id: "{{ relay_entity }}"
+  mode: single
+
+- alias: "LIV24 Rule 2 — Relay Control"
+  description: "ประเมิน sensor vs threshold แล้ว ON/OFF relay ตาม rule ที่ตั้งไว้บน dashboard"
+  trigger:
+    - platform: state
+      entity_id:
+        - sensor.liv24_temperature
+        - sensor.liv24_humidity
+        - sensor.liv24_pm2_5
+        - sensor.liv24_sound
+    - platform: state
+      entity_id:
+        - input_select.liv24_rule2_var
+        - input_select.liv24_rule2_condition
+        - input_number.liv24_rule2_threshold
+        - input_select.liv24_rule2_output
+        - input_boolean.liv24_rule2_enabled
+  condition:
+    - condition: state
+      entity_id: input_boolean.liv24_relay_remote
+      state: "on"
+    - condition: state
+      entity_id: input_boolean.liv24_rule2_enabled
+      state: "on"
+  action:
+    - variables:
+        sensor_val: >
+          {% set v = states('input_select.liv24_rule2_var') %}
+          {% if v == 'temperature' %}{{ states('sensor.liv24_temperature') | float(0) }}
+          {% elif v == 'humidity' %}{{ states('sensor.liv24_humidity') | float(0) }}
+          {% elif v == 'pm2_5' %}{{ states('sensor.liv24_pm2_5') | float(0) }}
+          {% elif v == 'sound' %}{{ states('sensor.liv24_sound') | float(0) }}
+          {% else %}0{% endif %}
+        threshold: "{{ states('input_number.liv24_rule2_threshold') | float(0) }}"
+        cond: "{{ states('input_select.liv24_rule2_condition') }}"
+        rule_met: >
+          {% set sv = sensor_val | float(0) %}
+          {% set th = threshold | float(0) %}
+          {% if cond == '>=' %}{{ sv >= th }}
+          {% elif cond == '<=' %}{{ sv <= th }}
+          {% elif cond == '==' %}{{ (sv - th) | abs < 0.01 }}
+          {% elif cond == '>' %}{{ sv > th }}
+          {% elif cond == '<' %}{{ sv < th }}
+          {% else %}false{% endif %}
+        relay_entity: >
+          {% if states('input_select.liv24_rule2_output') == 'Relay 1' %}
+            switch.liv24_relay_1
+          {% else %}
+            switch.liv24_relay_2
+          {% endif %}
+    - service: >
+        {% if rule_met | bool %}switch.turn_on{% else %}switch.turn_off{% endif %}
+      target:
+        entity_id: "{{ relay_entity }}"
+  mode: single
+
+# ══════════════════════════════════════════════════════════════════
+# Room Booking — MTG1
+# ══════════════════════════════════════════════════════════════════
+
+- alias: "MTG1 — Update booking trigger datetimes"
+  trigger:
+    - platform: state
+      entity_id: sensor.room_mtg1_status
+  condition:
+    - condition: template
+      value_template: "{{ state_attr('sensor.room_mtg1_status', 'next') is not none }}"
+  action:
+    - variables:
+        next_start: "{{ state_attr('sensor.room_mtg1_status', 'next').start }}"
+        next_end:   "{{ state_attr('sensor.room_mtg1_status', 'next').end }}"
+        today:      "{{ now().strftime('%Y-%m-%d') }}"
+    - service: input_datetime.set_datetime
+      target: { entity_id: input_datetime.room_mtg1_booking_start }
+      data:   { datetime: "{{ today + ' ' + next_start + ':00' }}" }
+    - service: input_datetime.set_datetime
+      target: { entity_id: input_datetime.room_mtg1_booking_end }
+      data:   { datetime: "{{ today + ' ' + next_end + ':00' }}" }
+    - service: input_datetime.set_datetime
+      target: { entity_id: input_datetime.room_mtg1_pre_trigger }
+      data:
+        datetime: >
+          {{ ((today + ' ' + next_start + ':00') | as_datetime
+              - timedelta(minutes=15)).strftime('%Y-%m-%d %H:%M:%S') }}
+    - service: input_datetime.set_datetime
+      target: { entity_id: input_datetime.room_mtg1_post_trigger }
+      data:
+        datetime: >
+          {{ ((today + ' ' + next_end + ':00') | as_datetime
+              + timedelta(minutes=5)).strftime('%Y-%m-%d %H:%M:%S') }}
+
+- alias: "MTG1 — Pre-booking: AC + purifier on"
+  trigger:
+    - platform: time
+      at: input_datetime.room_mtg1_pre_trigger
+  action:
+    - service: climate.turn_on
+      target: { entity_id: climate.room_mtg1_ac }
+    - service: climate.set_temperature
+      target: { entity_id: climate.room_mtg1_ac }
+      data:   { temperature: 25, hvac_mode: cool }
+    - service: fan.turn_on
+      target: { entity_id: fan.room_mtg1_purifier }
+    - service: logbook.log
+      data:
+        name: "Room MTG1 Automation"
+        message: "Pre-booking: AC + purifier on at {{ now().strftime('%H:%M') }}"
+
+- alias: "MTG1 — Booking start: Unlock door"
+  trigger:
+    - platform: time
+      at: input_datetime.room_mtg1_booking_start
+  action:
+    # - service: lock.unlock
+    #   target: { entity_id: lock.room_mtg1_door }   # TODO: IT entity
+    - service: logbook.log
+      data:
+        name: "Room MTG1 Automation"
+        message: "Booking started at {{ now().strftime('%H:%M') }} — door unlock pending IT entity"
+
+- alias: "MTG1 — Post-booking: Turn off all + lock"
+  trigger:
+    - platform: time
+      at: input_datetime.room_mtg1_post_trigger
+  action:
+    - service: climate.turn_off
+      target: { entity_id: climate.room_mtg1_ac }
+    - service: fan.turn_off
+      target: { entity_id: fan.room_mtg1_purifier }
+    # - service: light.turn_off
+    #   target: { entity_id: light.room_mtg1_lights }  # TODO: replace
+    # - service: lock.lock
+    #   target: { entity_id: lock.room_mtg1_door }     # TODO: IT entity
+    - service: logbook.log
+      data:
+        name: "Room MTG1 Automation"
+        message: "Post-booking cleanup at {{ now().strftime('%H:%M') }} — AC + purifier off"

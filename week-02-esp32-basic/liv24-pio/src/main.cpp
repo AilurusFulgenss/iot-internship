@@ -13,13 +13,9 @@
 #include "btn_mode.h"
 #include "ui_user.h"
 #include "ui_dev.h"
-#include "ui_exec.h"
-#include "ui_exec_detail.h"
-#include "ui_pm.h"
 #include "calib.h"
 #include "eth_upload.h"
 #include "wifi_mqtt.h"
-#include "history.h"
 #include "ui_alert.h"
 #include "ui_home.h"
 #include "ui_pin.h"
@@ -45,9 +41,11 @@ static lv_obj_t *scr[3];          // scr[0]=splash, scr[2]=relay
 static lv_obj_t *scr_eth_setup = NULL;
 
 // Relay state
-static bool relay_on[2] = {false, false};
+static bool relay_on[2]     = {false, false};
+static bool relay_remote     = false;
 static lv_obj_t *relay_btn[2];
 static lv_obj_t *relay_btn_lbl[2];
+static lv_obj_t *relay_mode_lbl = NULL;
 
 // ─── helpers ───────────────────────────────────────────
 
@@ -206,8 +204,34 @@ void relay_set_state(int idx, bool on)
 
 static void relay_cb(lv_event_t *e)
 {
+    if (relay_remote) return;
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
     relay_set_state(idx, !relay_on[idx]);
+}
+
+static void relay_apply_remote_mode(bool remote)
+{
+    relay_remote = remote;
+    if (bsp_display_lock(0)) {
+        for (int i = 0; i < 2; i++) {
+            if (remote) {
+                lv_obj_add_state(relay_btn[i], LV_STATE_DISABLED);
+                lv_obj_set_style_text_color(relay_btn_lbl[i],
+                    lv_color_hex(0x2A2A2A), 0);
+            } else {
+                lv_obj_clear_state(relay_btn[i], LV_STATE_DISABLED);
+                lv_obj_set_style_text_color(relay_btn_lbl[i],
+                    relay_on[i] ? lv_color_hex(0xFFFFFF) : lv_color_hex(0x555555), 0);
+            }
+        }
+        if (relay_mode_lbl) {
+            lv_label_set_text(relay_mode_lbl, remote ? "REMOTE" : "LOCAL");
+            lv_obj_set_style_text_color(relay_mode_lbl,
+                remote ? lv_color_hex(0xFFAA00) : lv_color_hex(0x00E5FF), 0);
+        }
+        bsp_display_unlock();
+    }
+    wifi_mqtt_publish_relay_mode_state(remote);
 }
 
 static void create_relay_ctrl(void)
@@ -250,6 +274,12 @@ static void create_relay_ctrl(void)
     lv_obj_set_style_text_color(lbl_title, lv_color_hex(0x00E5FF), 0);
     lv_obj_set_style_text_font(lbl_title, &lv_font_montserrat_32, 0);
     lv_obj_align(lbl_title, LV_ALIGN_LEFT_MID, title_x, 0);
+
+    relay_mode_lbl = lv_label_create(hdr);
+    lv_label_set_text(relay_mode_lbl, "LOCAL");
+    lv_obj_set_style_text_color(relay_mode_lbl, lv_color_hex(0x00E5FF), 0);
+    lv_obj_set_style_text_font(relay_mode_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_align(relay_mode_lbl, LV_ALIGN_RIGHT_MID, -4, 0);
 
     // ── Relay buttons — shifted +72px for header ──────────
     // Button 1: y=252 (was 180), Button 2: y=492 (was 420)
@@ -376,9 +406,7 @@ static void sensor_read_task(void *arg)
                 bsp_display_lock(0);
                 ui_alert_set_mqtt_status(wifi_mqtt_is_connected());
                 ui_user_update(t_cal, h_cal, p25_cal, p10_cal, (int)s_cal);
-                ui_pm_update(t_cal, h_cal, p25_cal, p10_cal, (float)s_cal);
                 ui_dev_update_sn300(temp, hum, (float)snd, pm25, pm10);
-                ui_exec_update_pm(t_cal, h_cal, p25_cal, p10_cal);
                 ui_home_update_sensors(p25_cal, t_cal, h_cal);
                 ui_alert_check(t_cal, h_cal, p25_cal, p10_cal, s_cal);
                 bsp_display_unlock();
@@ -402,10 +430,9 @@ static void sensor_read_task(void *arg)
 static void touch_nav_init(void)
 {
     // ── ▶ next-page button at bottom-right of USER-mode screens ──────────────
-    // Strip on PM screen moved up to -72 (from -48), so ▶ at -8 clears it with 8px gap.
-    lv_obj_t *cycle_scrns[] = {scr_user, scr_pm, scr[2]};
-    int       cycle_y[]     = {-8, -8, -8};
-    for (int i = 0; i < 3; i++) {
+    lv_obj_t *cycle_scrns[] = {scr_user, scr[2]};
+    int       cycle_y[]     = {-8, -8};
+    for (int i = 0; i < 2; i++) {
         lv_obj_t *btn = lv_btn_create(cycle_scrns[i]);
         lv_obj_set_size(btn, 88, 56);
         lv_obj_align(btn, LV_ALIGN_BOTTOM_RIGHT, -8, cycle_y[i]);
@@ -425,13 +452,10 @@ static void touch_nav_init(void)
         lv_obj_center(lbl);
     }
 
-    // ── DEV / EXEC hidden zones — 5-tap on top corners, no visible UI ───────
-    // top-left   × 5  → DEV (calibrate)
-    // top-center × 5  → EXEC (overview)
+    // ── DEV hidden zone — 5-tap top-left, no visible UI ─────────────────────
     {
-        struct TapZone { uint32_t t[5]; int n; app_mode_t mode; };
-        static TapZone tz_dev  = {{}, 0, MODE_DEV};
-        static TapZone tz_exec = {{}, 0, MODE_EXEC};
+        struct TapZone { uint32_t t[5]; int n; };
+        static TapZone tz_dev = {{}, 0};
 
         auto tap_cb = [](lv_event_t *e) {
             auto *tz     = static_cast<TapZone *>(lv_event_get_user_data(e));
@@ -441,21 +465,17 @@ static void touch_nav_init(void)
             if (tz->n < 5) tz->t[tz->n] = now;
             tz->n++;
             if (tz->n >= 5) {
-                if (lv_tick_elaps(tz->t[0]) <= 3000) {
-                    if (tz->mode == MODE_DEV)
-                        ui_pin_show([]() { set_app_mode(MODE_DEV); });
-                    else
-                        set_app_mode(tz->mode);
-                }
+                if (lv_tick_elaps(tz->t[0]) <= 3000)
+                    ui_pin_show([]() { set_app_mode(MODE_DEV); });
                 tz->n = 0;
             }
         };
 
-        TapZone *zones[2]    = {&tz_dev, &tz_exec};
-        lv_align_t aligns[2] = {LV_ALIGN_TOP_LEFT, LV_ALIGN_TOP_MID};
-        int x_off[2]         = {0, 0};
-        int y_off[2]         = {0, 0};
-        for (int i = 0; i < 2; i++) {
+        TapZone *zones[1]    = {&tz_dev};
+        lv_align_t aligns[1] = {LV_ALIGN_TOP_LEFT};
+        int x_off[1]         = {0};
+        int y_off[1]         = {0};
+        for (int i = 0; i < 1; i++) {
             lv_obj_t *z = lv_obj_create(scr_user);
             lv_obj_set_size(z, 90, 90);
             lv_obj_align(z, aligns[i], x_off[i], y_off[i]);
@@ -468,9 +488,9 @@ static void touch_nav_init(void)
         }
     }
 
-    // ── ← USER exit button on DEV and EXEC screens ───────────────────────────
-    lv_obj_t *mode_scrns[] = {scr_dev, scr_exec};
-    for (int i = 0; i < 2; i++) {
+    // ── ← USER exit button on DEV screen ─────────────────────────────────────
+    lv_obj_t *mode_scrns[] = {scr_dev};
+    for (int i = 0; i < 1; i++) {
         lv_obj_t *btn = lv_btn_create(mode_scrns[i]);
         lv_obj_set_size(btn, 88, 40);
         lv_obj_align(btn, LV_ALIGN_TOP_RIGHT, -8, 12);
@@ -492,19 +512,14 @@ static void touch_nav_init(void)
 
 // ─── btn_mode callbacks ────────────────────────────────
 
-// Short press cycle: USER → PM History → Relay → USER
+// Short press cycle: USER → Relay → Home
 void on_short_press(void)
 {
     bsp_display_lock(0);
     lv_obj_t *active = lv_scr_act();
-    if (active == scr_exec) {
-        // EXEC mode — short press does nothing
-    } else if (active == scr_home) {
+    if (active == scr_home) {
         // Home has no nav button — do nothing
     } else if (active == scr_user) {
-        lv_scr_load_anim(scr_pm, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
-        ESP_LOGI(TAG, "-> PM History");
-    } else if (active == scr_pm) {
         lv_scr_load_anim(scr[2], LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
         ESP_LOGI(TAG, "-> Relay page");
     } else {
@@ -523,9 +538,6 @@ void on_mode_changed(app_mode_t new_mode)
             break;
         case MODE_DEV:
             lv_scr_load_anim(scr_dev,  LV_SCR_LOAD_ANIM_MOVE_LEFT, 400, 0, false);
-            break;
-        case MODE_EXEC:
-            lv_scr_load_anim(scr_exec, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
             break;
     }
     bsp_display_unlock();
@@ -566,23 +578,6 @@ static void on_test_alert(const char *json, int len)
     }, "alert_clr", 2048, NULL, 2, NULL);
 }
 
-static void on_hist_24h(const char *d, int len)
-{
-    hist_parse_24h(d, len);
-    if (bsp_display_lock(0)) {
-        ui_pm_refresh_history();
-        bsp_display_unlock();
-    }
-}
-
-static void on_hist_7d(const char *d, int len)
-{
-    hist_parse_7d(d, len);
-    if (bsp_display_lock(0)) {
-        ui_exec_detail_refresh();
-        bsp_display_unlock();
-    }
-}
 
 static void logo_url_received(const char *url)
 {
@@ -690,10 +685,7 @@ extern "C" void app_main(void)
     create_splash();          // shows logo centered on dark bg
     create_relay_ctrl();
     ui_user_create();
-    ui_pm_create();
     ui_dev_create();
-    ui_exec_create();
-    ui_exec_detail_create();
     ui_home_create();
     touch_nav_init();
     ui_alert_init();
@@ -714,8 +706,8 @@ extern "C" void app_main(void)
     // during PHY autonegotiation; DHCP can complete during that block so the
     // IP_EVENT_ETH_GOT_IP handler must already be registered when it fires.
     wifi_mqtt_set_relay_cb(relay_set_state);
+    wifi_mqtt_set_relay_mode_cb(relay_apply_remote_mode);
     wifi_mqtt_set_logo_url_cb(logo_url_received);
-    wifi_mqtt_set_history_cb(on_hist_24h, on_hist_7d);
     wifi_mqtt_set_test_alert_cb(on_test_alert);
     wifi_mqtt_set_ip_cb([](const char *ip) {
         if (bsp_display_lock(0)) {

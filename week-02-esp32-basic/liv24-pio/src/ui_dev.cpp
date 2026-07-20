@@ -561,14 +561,14 @@ static void make_net_tab(lv_obj_t *parent)
 
     char id_buf[36];
     snprintf(id_buf, sizeof(id_buf), "ID: %s", wifi_mqtt_get_device_id());
-    make_lbl(sc, id_buf, 0x4A6A90, &lv_font_montserrat_14,
-             LV_ALIGN_TOP_LEFT, 0, 22);
+    make_lbl(sc, id_buf, 0x4A6A90, &lv_font_montserrat_24,
+             LV_ALIGN_TOP_LEFT, 0, 18);
 
     char mode_buf[24];
     snprintf(mode_buf, sizeof(mode_buf), "Mode: %s",
              strcmp(g_net_mode, "static") == 0 ? "STATIC" : "DHCP");
-    g_lbl_status_mode = make_lbl(sc, mode_buf, 0x5577AA, &lv_font_montserrat_14,
-                                 LV_ALIGN_TOP_MID, 0, 22);
+    g_lbl_status_mode = make_lbl(sc, mode_buf, 0x5577AA, &lv_font_montserrat_24,
+                                 LV_ALIGN_TOP_MID, 0, 18);
 
     g_lbl_status_ip = make_lbl(sc, "IP: --", 0x00CC88, &lv_font_montserrat_24,
                                LV_ALIGN_BOTTOM_LEFT, 0, 0);

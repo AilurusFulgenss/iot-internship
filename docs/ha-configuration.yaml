@@ -9,18 +9,14 @@ script: !include scripts.yaml
 scene: !include scenes.yaml
 
 mqtt:
-  # Topic format: esp32_p4_86/{device_id}/...
-  # device_id = 12-char lowercase MAC hex, visible on DEV screen → Network tab → CURRENT STATUS
-  # For multi-device: duplicate sensor blocks with each device's ID.
-  # Relay command_topic must use the SPECIFIC device ID (no wildcard for publish).
-  # Replace REPLACE_WITH_DEVICE_ID below after first boot.
   sensor:
     # ── SN-300 PM Sensor ─────────────────────────────────────────────
-    # + wildcard accepts data from any device; works fine for single-device deployments.
+    # Topic format: esp32_p4_86/{device_id}/sensors
+    # + wildcard accepts data from any device (fine for single-device setup)
     - name: "LIV24 Temperature"
       unique_id: liv24_temp
       state_topic: "esp32_p4_86/+/sensors"
-      value_template: "{{ value_json.temp | default(none) }}"
+      value_template: "{{ value_json.temperature | default(none) }}"
       unit_of_measurement: "°C"
       device_class: temperature
       state_class: measurement
@@ -28,7 +24,7 @@ mqtt:
     - name: "LIV24 Humidity"
       unique_id: liv24_hum
       state_topic: "esp32_p4_86/+/sensors"
-      value_template: "{{ value_json.hum | default(none) }}"
+      value_template: "{{ value_json.humidity | default(none) }}"
       unit_of_measurement: "%"
       device_class: humidity
       state_class: measurement
@@ -36,7 +32,7 @@ mqtt:
     - name: "LIV24 PM2.5"
       unique_id: liv24_pm25
       state_topic: "esp32_p4_86/+/sensors"
-      value_template: "{{ value_json.pm25 | default(none) }}"
+      value_template: "{{ value_json.pm2_5 | default(none) }}"
       unit_of_measurement: "µg/m³"
       device_class: pm25
       state_class: measurement
@@ -56,12 +52,17 @@ mqtt:
       unit_of_measurement: "dB"
       state_class: measurement
 
+    # Confirmed relay mode reported back by ESP32 after applying relay/mode command
+    - name: "LIV24 Relay Mode"
+      unique_id: liv24_relay_mode
+      state_topic: "esp32_p4_86/+/relay/mode/state"
+      icon: mdi:remote
+
   switch:
-    # command_topic requires the specific device ID — replace REPLACE_WITH_DEVICE_ID
-    # with the 12-char hex ID shown on the DEV screen after first boot.
+    # Device ID: 30eda0ea5d0f (visible on DEV screen → Network tab)
     - name: "LIV24 Relay 1"
       unique_id: liv24_relay_1
-      command_topic: "esp32_p4_86/REPLACE_WITH_DEVICE_ID/relay/1/set"
+      command_topic: "esp32_p4_86/30eda0ea5d0f/relay/1/set"
       state_topic: "esp32_p4_86/+/relay/1/state"
       payload_on: "ON"
       payload_off: "OFF"
@@ -69,13 +70,14 @@ mqtt:
 
     - name: "LIV24 Relay 2"
       unique_id: liv24_relay_2
-      command_topic: "esp32_p4_86/REPLACE_WITH_DEVICE_ID/relay/2/set"
+      command_topic: "esp32_p4_86/30eda0ea5d0f/relay/2/set"
       state_topic: "esp32_p4_86/+/relay/2/state"
       payload_on: "ON"
       payload_off: "OFF"
       retain: false
 
 sensor:
+  # 1-hour rolling averages — used by history graphs in dashboard
   - platform: statistics
     name: "LIV24 Temp 1h"
     entity_id: sensor.liv24_temperature
@@ -116,7 +118,7 @@ sensor:
       hours: 1
     sampling_size: 20
 
-  # ── Room Booking Status (REST) ────────────────────────────
+  # Room booking status (REST API — booking server on RPi)
   - platform: rest
     name: "room_mtg1_status"
     resource: "http://192.168.1.105:5000/api/rooms/M-MTG1"
@@ -127,38 +129,88 @@ sensor:
       - current
       - next
 
+# ── LIV24 Relay Rule helpers ──────────────────────────────────────
+input_boolean:
+  liv24_relay_remote:
+    name: "Relay Remote Mode"
+    initial: false
+    icon: mdi:remote
+  liv24_rule1_enabled:
+    name: "Rule 1 Enabled"
+    initial: false
+    icon: mdi:play-circle-outline
+  liv24_rule2_enabled:
+    name: "Rule 2 Enabled"
+    initial: false
+    icon: mdi:play-circle-outline
+
+input_select:
+  liv24_rule1_var:
+    name: "Rule 1 — Variable"
+    options: [temperature, humidity, pm2_5, sound]
+    initial: temperature
+    icon: mdi:thermometer
+  liv24_rule1_condition:
+    name: "Rule 1 — Condition"
+    options: [">=", "<=", "==", ">", "<"]
+    initial: ">="
+    icon: mdi:code-greater-than-or-equal
+  liv24_rule1_output:
+    name: "Rule 1 — Output"
+    options: ["Relay 1", "Relay 2"]
+    initial: "Relay 1"
+    icon: mdi:toggle-switch-outline
+
+  liv24_rule2_var:
+    name: "Rule 2 — Variable"
+    options: [temperature, humidity, pm2_5, sound]
+    initial: humidity
+    icon: mdi:water-percent
+  liv24_rule2_condition:
+    name: "Rule 2 — Condition"
+    options: [">=", "<=", "==", ">", "<"]
+    initial: ">="
+    icon: mdi:code-greater-than-or-equal
+  liv24_rule2_output:
+    name: "Rule 2 — Output"
+    options: ["Relay 1", "Relay 2"]
+    initial: "Relay 2"
+    icon: mdi:toggle-switch-outline
+
+input_number:
+  liv24_rule1_threshold:
+    name: "Rule 1 — Threshold"
+    min: -50
+    max: 1000
+    step: 0.5
+    initial: 25
+    icon: mdi:target
+  liv24_rule2_threshold:
+    name: "Rule 2 — Threshold"
+    min: -50
+    max: 1000
+    step: 0.5
+    initial: 70
+    icon: mdi:target
+
+# ── Room Booking helpers ──────────────────────────────────────────
 input_text:
-  # ── PM sensor history ─────────────────────────────────────
-  liv24_24h_temp:
-    max: 255
-  liv24_24h_hum:
-    max: 255
-  liv24_24h_pm25:
-    max: 255
-  liv24_24h_pm10:
-    max: 255
-  liv24_24h_sound:
-    max: 255
-  liv24_7d_temp:
-    max: 255
-  liv24_7d_hum:
-    max: 255
-  liv24_7d_pm25:
-    max: 255
-  liv24_7d_pm10:
-    max: 255
-  liv24_7d_sound:
-    max: 255
-  # ── Booking form ──────────────────────────────────────────
   booking_title:
-    name: Meeting Title
-    max: 64
+    name: "Meeting Title"
+    max: 100
   booking_organizer:
-    name: Your Name
-    max: 64
+    name: "Your Name"
+    max: 60
 
 input_datetime:
-  # ── Existing booking helpers ──────────────────────────────
+  booking_start:
+    name: "Booking Start"
+    has_date: true
+    has_time: true
+  booking_end:
+    name: "Booking End"
+    has_date: true
+    has_time: true
   room_mtg1_booking_start:
     name: "MTG1 Booking Start"
     has_date: true
@@ -175,13 +227,3 @@ input_datetime:
     name: "MTG1 Post-booking Trigger"
     has_date: true
     has_time: true
-  # ── Booking form ──────────────────────────────────────────
-  booking_start:
-    name: Booking Start
-    has_date: true
-    has_time: true
-  booking_end:
-    name: Booking End
-    has_date: true
-    has_time: true
-

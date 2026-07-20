@@ -132,24 +132,39 @@ static const char HTML_LOGIN[] =
 "<title>LIV24 Login</title><style>"
 "body{background:#0a0a12;color:#eee;font-family:sans-serif;"
 "max-width:320px;margin:80px auto;padding:20px;text-align:center}"
-"h2{color:#00e5ff;margin:0 0 16px}"
+"h2{color:#00e5ff;margin:0 0 8px}"
 "input{width:100%;padding:14px;background:#111;color:#eee;"
-"border:1px solid #334455;border-radius:8px;font-size:22px;"
-"letter-spacing:8px;text-align:center;box-sizing:border-box;margin:8px 0}"
+"border:1px solid #334455;border-radius:8px;font-size:28px;"
+"letter-spacing:12px;text-align:center;box-sizing:border-box;margin:12px 0}"
 "button{padding:14px 0;background:#00e5ff;color:#111;border:none;"
 "border-radius:10px;font-size:16px;font-weight:bold;cursor:pointer;"
 "width:100%;margin-top:8px}"
+"button:disabled{background:#1a2a3a;color:#445566;cursor:default}"
 "#err{color:#ff4444;font-size:14px;margin-top:12px;min-height:20px}"
+"#hint{color:#334455;font-size:12px;margin:4px 0 0}"
 "</style></head><body>"
 "<h2>LIV24 Setup</h2>"
-"<p style='color:#556677'>Enter password to continue</p>"
-"<form method='POST' action='/login'>"
-"<input type='password' name='pass' maxlength='16' autofocus>"
-"<button type='submit'>Unlock</button>"
+"<p style='color:#556677;margin:0 0 4px'>Enter 6-digit PIN</p>"
+"<form method='POST' action='/login' onsubmit='return chk()'>"
+"<input type='password' id='pin' name='pass' maxlength='6'"
+" inputmode='numeric' pattern='[0-9]{6}' autocomplete='off' autofocus"
+" oninput=\"this.value=this.value.replace(/[^0-9]/g,'').slice(0,6);"
+"document.getElementById('btn').disabled=this.value.length<6\">"
+"<p id='hint'>&#11044;&#11044;&#11044;&#11044;&#11044;&#11044;</p>"
+"<button id='btn' type='submit' disabled>Unlock</button>"
 "</form>"
 "<div id='err'></div>"
-"<script>if(location.search.indexOf('e=1')>=0)"
-"document.getElementById('err').textContent='Incorrect password';</script>"
+"<script>"
+"if(location.search.indexOf('e=1')>=0)"
+"  document.getElementById('err').textContent='Incorrect PIN';"
+"function chk(){"
+"  var v=document.getElementById('pin').value;"
+"  if(!/^[0-9]{6}$/.test(v)){"
+"    document.getElementById('err').textContent='PIN must be 6 digits';"
+"    return false;"
+"  }return true;"
+"}"
+"</script>"
 "</body></html>";
 
 static const char HTML[] =
@@ -199,6 +214,14 @@ static const char HTML[] =
 "}"
 "function picked(inp){"
 "  var file=inp.files[0];if(!file)return;"
+"  var st=document.getElementById('st');"
+"  if(file.size>10*1024*1024){"
+"    st.style.color='#ff4444';"
+"    st.innerText='File too large — max 10 MB ('+Math.round(file.size/1048576)+' MB selected)';"
+"    document.getElementById('btn').disabled=true;"
+"    return;"
+"  }"
+"  st.innerText='';"
 "  var img=new Image();"
 "  img.onload=function(){"
 "    mkBlob(img,48,function(b){b48=b;"
@@ -224,72 +247,6 @@ static const char HTML[] =
 "}"
 "</script>"
 "<hr style='border:1px solid #1a2a3a;margin:28px 0'>"
-"<h2>Sensor Config</h2>"
-"<p>Choose which sensor is plugged into RS485</p>"
-"<select id='sm' style='width:100%;padding:12px;background:#111;color:#eee;"
-"border:1px solid #334455;border-radius:8px;font-size:15px;margin:8px 0'>"
-"<option value='0'>SN-300BYH-M (PM/Temp/Hum/Sound)</option>"
-"<option value='1'>CWT-EC/TDS (0-44000 uS/cm)</option>"
-"<option value='2'>LD100 Leak Detector</option>"
-"<option value='3'>CWT-TH04S (Temp/Hum)</option>"
-"<option value='4'>BH-485-ORP (ORP+Temp)</option>"
-"</select>"
-"<div style='display:flex;align-items:center;gap:12px;margin:8px 0'>"
-"<span style='color:#556677;font-size:14px;white-space:nowrap'>Slave ID</span>"
-"<input type='number' id='sid' min='1' max='247' value='1'"
-" style='flex:1;padding:10px;background:#111;color:#eee;"
-"border:1px solid #334455;border-radius:8px;font-size:15px'>"
-"</div>"
-"<button onclick='saveSensor()'>Save Sensor Config</button>"
-"<div id='sst' style='margin-top:10px;min-height:20px;font-size:14px;color:#00cc44'></div>"
-"<script>"
-"fetch('/sensor_info').then(function(r){return r.json();}).then(function(d){"
-"  document.getElementById('sm').value=d.model;"
-"  document.getElementById('sid').value=d.slave;"
-"});"
-"function saveSensor(){"
-"  var m=document.getElementById('sm').value;"
-"  var s=document.getElementById('sid').value;"
-"  var ss=document.getElementById('sst');"
-"  fetch('/sensor_cfg',{method:'POST',"
-"    headers:{'Content-Type':'application/x-www-form-urlencoded'},"
-"    body:'model='+m+'&slave='+s})"
-"  .then(function(r){return r.text();})"
-"  .then(function(t){ss.style.color='#00cc44';ss.innerText=t;})"
-"  .catch(function(e){ss.style.color='#ff4444';ss.innerText='Error: '+e;});"
-"}"
-"</script>"
-"<hr style='border:1px solid #1a2a3a;margin:20px 0'>"
-"<button id='tbtn' onclick='testSensor()'"
-" style='background:#0a2018;color:#00cc44;border:1px solid #00cc44'>Test Connection</button>"
-"<div id='tst' style='margin-top:10px;font-size:13px;text-align:left;"
-"background:#0a1a14;border-radius:8px;padding:10px;display:none;line-height:1.8'></div>"
-"<script>"
-"function testSensor(){"
-"  var tst=document.getElementById('tst'),tb=document.getElementById('tbtn');"
-"  tb.disabled=true;tst.style.display='block';tst.style.color='#aabbcc';tst.innerText='Testing...';"
-"  fetch('/sensor_test').then(function(r){return r.json();}).then(function(d){"
-"    tb.disabled=false;"
-"    if(!d.ok){tst.innerHTML='<span style=\"color:#ff4444\">✗ '+d.error+'</span>';return;}"
-"    var hdr='<span style=\"color:#00cc44\">✓ Sensor responded</span><br>'"
-"      +'<span style=\"color:#778899\">'+d.model+' | Slave: '+d.slave+'</span><br>'"
-"      +'<span style=\"color:#556677\">Raw: ['+d.regs.join(', ')+']</span><br>';"
-"    if(d.ec!==undefined){"
-"      tst.innerHTML=hdr+'EC: <b>'+d.ec+' uS/cm</b>';"
-"    }else if(d.leak!==undefined){"
-"      var sc=d.leak?'color:#ff4444':'color:#00cc44';"
-"      tst.innerHTML=hdr+'Leak: <b style=\"'+sc+'\">'+d.status+'</b>';"
-"    }else if(d.orp!==undefined){"
-"      tst.innerHTML=hdr+'ORP: <b>'+d.orp+' mV</b>  Temp: <b>'+d.temp+'&deg;C</b>';"
-"    }else{"
-"      tst.innerHTML=hdr"
-"        +'Temp: <b>'+d.temp+'&deg;C</b>  Hum: <b>'+d.hum+'%</b><br>'"
-"        +'PM2.5: <b>'+d.pm25+'</b>  PM10: <b>'+d.pm10+'</b>  Sound: <b>'+d.sound+' dB</b>';"
-"    }"
-"  }).catch(function(e){tb.disabled=false;tst.innerHTML='<span style=\"color:#ff4444\">Error: '+e+'</span>';});"
-"}"
-"</script>"
-"<hr style='border:1px solid #1a2a3a;margin:20px 0'>"
 "<h2>MQTT Config</h2>"
 "<p id='dev_p' style='color:#445566;font-size:12px'>Loading device info...</p>"
 "<div style='display:flex;align-items:center;gap:12px;margin:8px 0'>"
@@ -320,6 +277,29 @@ static const char HTML[] =
 "  fetch('/mqtt_cfg',{method:'POST',"
 "    headers:{'Content-Type':'application/x-www-form-urlencoded'},"
 "    body:'host='+encodeURIComponent(h)+'&port='+p})"
+"  .then(function(r){return r.text();})"
+"  .then(function(t){st.style.color='#00cc44';st.textContent=t;})"
+"  .catch(function(e){st.style.color='#ff4444';st.textContent='Error: '+e;});}"
+"</script>"
+"<hr style='border:1px solid #1a2a3a;margin:20px 0'>"
+"<h2>HA Config</h2>"
+"<div style='display:flex;align-items:center;gap:12px;margin:8px 0'>"
+"<span style='color:#556677;font-size:14px;white-space:nowrap'>HA Base URL</span>"
+"<input type='text' id='haurl' placeholder='http://10.24.1.104:8123'"
+" style='flex:1;padding:10px;background:#111;color:#eee;"
+"border:1px solid #334455;border-radius:8px;font-size:15px'>"
+"</div>"
+"<button onclick='saveHA()'>Save HA Config</button>"
+"<div id='hast' style='margin-top:10px;min-height:20px;font-size:14px;color:#00cc44'></div>"
+"<script>"
+"fetch('/ha_info').then(function(r){return r.json();})"
+".then(function(d){document.getElementById('haurl').value=d.url||'';}).catch(function(){});"
+"function saveHA(){"
+"  var u=document.getElementById('haurl').value.trim();"
+"  var st=document.getElementById('hast');"
+"  fetch('/ha_cfg',{method:'POST',"
+"    headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+"    body:'url='+encodeURIComponent(u)})"
 "  .then(function(r){return r.text();})"
 "  .then(function(t){st.style.color='#00cc44';st.textContent=t;})"
 "  .catch(function(e){st.style.color='#ff4444';st.textContent='Error: '+e;});}"
@@ -463,108 +443,23 @@ static esp_err_t post_upload_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-// ── Sensor config handlers ────────────────────────────────────────────────────
+// ── URL decode helper (for x-www-form-urlencoded bodies) ─────────────────────
 
-static esp_err_t get_sensor_test_handler(httpd_req_t *req)
+static void url_decode(char *s)
 {
-    if (!is_authenticated(req)) return redirect_to_login(req);
-    sensor_config_t      cfg = sensor_config_get();
-    const sensor_model_t *m  = &SENSOR_MODELS[cfg.model_idx];
-    sensor_last_raw_t    raw = sensor_get_raw();
-
-    char json[320];
-    if (!raw.valid) {
-        snprintf(json, sizeof(json), "{\"ok\":false,\"error\":\"No reading yet\"}");
-    } else {
-        char regs_str[80] = "[";
-        for (int i = 0; i < raw.count; i++) {
-            char tmp[12];
-            snprintf(tmp, sizeof(tmp), i < raw.count - 1 ? "%d," : "%d]", raw.regs[i]);
-            strncat(regs_str, tmp, sizeof(regs_str) - strlen(regs_str) - 1);
-        }
-
-        if (m->type == SENSOR_TYPE_EC) {
-            float ec = (m->idx_ec >= 0) ? raw.regs[m->idx_ec] / m->scale : NAN;
-            char ecs[12];
-            if (isnan(ec)) snprintf(ecs, sizeof(ecs), "null");
-            else           snprintf(ecs, sizeof(ecs), "%.1f", ec);
-            snprintf(json, sizeof(json),
-                "{\"ok\":true,\"model\":\"%s\",\"slave\":%d,\"regs\":%s,\"ec\":%s}",
-                m->name, cfg.slave_id, regs_str, ecs);
-
-        } else if (m->type == SENSOR_TYPE_LEAK) {
-            bool alarm = (m->idx_leak >= 0) ? (raw.regs[m->idx_leak] == 0x0002) : false;
-            snprintf(json, sizeof(json),
-                "{\"ok\":true,\"model\":\"%s\",\"slave\":%d,\"regs\":%s,"
-                "\"leak\":%s,\"status\":\"%s\"}",
-                m->name, cfg.slave_id, regs_str,
-                alarm ? "true" : "false",
-                alarm ? "ALARM" : "NORMAL");
-
-        } else if (m->type == SENSOR_TYPE_ORP) {
-            float orp  = (m->idx_orp  >= 0) ? (int16_t)raw.regs[m->idx_orp]  / m->scale : NAN;
-            float temp = (m->idx_temp >= 0) ? (int16_t)raw.regs[m->idx_temp] / m->scale : NAN;
-            char os[10], ts[8];
-            if (isnan(orp))  snprintf(os, sizeof(os), "null"); else snprintf(os, sizeof(os), "%.1f", orp);
-            if (isnan(temp)) snprintf(ts, sizeof(ts), "null"); else snprintf(ts, sizeof(ts), "%.1f", temp);
-            snprintf(json, sizeof(json),
-                "{\"ok\":true,\"model\":\"%s\",\"slave\":%d,\"regs\":%s,"
-                "\"orp\":%s,\"temp\":%s}",
-                m->name, cfg.slave_id, regs_str, os, ts);
-
+    char *r = s, *w = s;
+    while (*r) {
+        if (*r == '%' && r[1] && r[2]) {
+            char hex[3] = {r[1], r[2], '\0'};
+            *w++ = (char)strtol(hex, NULL, 16);
+            r += 3;
+        } else if (*r == '+') {
+            *w++ = ' '; r++;
         } else {
-            float temp  = (m->idx_temp  >= 0) ? (int16_t)raw.regs[m->idx_temp] / m->scale : NAN;
-            float hum   = (m->idx_hum   >= 0) ? raw.regs[m->idx_hum]           / m->scale : NAN;
-            float pm10  = (m->idx_pm10  >= 0) ? raw.regs[m->idx_pm10]  / m->scale : NAN;
-            float pm25  = (m->idx_pm25  >= 0) ? raw.regs[m->idx_pm25]  / m->scale : NAN;
-            float sound = (m->idx_sound >= 0) ? (float)raw.regs[m->idx_sound]     : NAN;
-            char ts[8], hs[8], p10s[8], p25s[8], ss[8];
-            if (isnan(temp))  snprintf(ts,   sizeof(ts),   "null"); else snprintf(ts,   sizeof(ts),   "%.1f", temp);
-            if (isnan(hum))   snprintf(hs,   sizeof(hs),   "null"); else snprintf(hs,   sizeof(hs),   "%.1f", hum);
-            if (isnan(pm10))  snprintf(p10s, sizeof(p10s), "null"); else snprintf(p10s, sizeof(p10s), "%.1f", pm10);
-            if (isnan(pm25))  snprintf(p25s, sizeof(p25s), "null"); else snprintf(p25s, sizeof(p25s), "%.1f", pm25);
-            if (isnan(sound)) snprintf(ss,   sizeof(ss),   "null"); else snprintf(ss,   sizeof(ss),   "%.1f", sound);
-            snprintf(json, sizeof(json),
-                "{\"ok\":true,\"model\":\"%s\",\"slave\":%d,\"regs\":%s,"
-                "\"temp\":%s,\"hum\":%s,\"pm10\":%s,\"pm25\":%s,\"sound\":%s}",
-                m->name, cfg.slave_id, regs_str, ts, hs, p10s, p25s, ss);
+            *w++ = *r++;
         }
     }
-    httpd_resp_set_type(req, "application/json");
-    return httpd_resp_sendstr(req, json);
-}
-
-static esp_err_t get_sensor_info_handler(httpd_req_t *req)
-{
-    if (!is_authenticated(req)) return redirect_to_login(req);
-    sensor_config_t cfg = sensor_config_get();
-    char json[64];
-    snprintf(json, sizeof(json), "{\"model\":%d,\"slave\":%d}",
-             cfg.model_idx, cfg.slave_id);
-    httpd_resp_set_type(req, "application/json");
-    return httpd_resp_sendstr(req, json);
-}
-
-static esp_err_t post_sensor_cfg_handler(httpd_req_t *req)
-{
-    if (!is_authenticated(req)) return redirect_to_login(req);
-    char body[64] = {};
-    int len = httpd_req_recv(req, body, sizeof(body) - 1);
-    if (len <= 0) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty body");
-        return ESP_FAIL;
-    }
-    body[len] = '\0';
-
-    uint8_t model = 0, slave = 1;
-    char *p = strstr(body, "model=");
-    if (p) model = (uint8_t)atoi(p + 6);
-    p = strstr(body, "slave=");
-    if (p) slave = (uint8_t)atoi(p + 6);
-
-    sensor_config_set(model, slave);
-    httpd_resp_sendstr(req, "Sensor config saved!");
-    return ESP_OK;
+    *w = '\0';
 }
 
 // ── MQTT config handlers ──────────────────────────────────────────────────────
@@ -626,6 +521,53 @@ static esp_err_t post_mqtt_cfg_handler(httpd_req_t *req)
         ESP_LOGI(TAG, "MQTT config saved: %s:%d", host, (int)port);
     }
     httpd_resp_sendstr(req, "MQTT config saved! Restart device to apply.");
+    return ESP_OK;
+}
+
+// ── HA config handlers ────────────────────────────────────────────────────────
+
+static esp_err_t get_ha_info_handler(httpd_req_t *req)
+{
+    if (!is_authenticated(req)) return redirect_to_login(req);
+    char url[72] = "http://10.24.1.104:8123";
+    nvs_handle_t h;
+    if (nvs_open("ha_cfg", NVS_READONLY, &h) == ESP_OK) {
+        size_t len = sizeof(url);
+        nvs_get_str(h, "url", url, &len);
+        nvs_close(h);
+    }
+    char json[128];
+    snprintf(json, sizeof(json), "{\"url\":\"%s\"}", url);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, json);
+}
+
+static esp_err_t post_ha_cfg_handler(httpd_req_t *req)
+{
+    if (!is_authenticated(req)) return redirect_to_login(req);
+    char body[128] = {};
+    int len = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (len <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty body");
+        return ESP_FAIL;
+    }
+    body[len] = '\0';
+
+    char url[72] = "";
+    char *p = strstr(body, "url=");
+    if (p) {
+        strncpy(url, p + 4, sizeof(url) - 1);
+        url_decode(url);
+    }
+
+    nvs_handle_t h;
+    if (nvs_open("ha_cfg", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_str(h, "url", url);
+        nvs_commit(h);
+        nvs_close(h);
+        ESP_LOGI(TAG, "HA config saved: %s", url);
+    }
+    httpd_resp_sendstr(req, "HA config saved! Restart device to apply.");
     return ESP_OK;
 }
 
@@ -709,7 +651,7 @@ static void start_http_server(void)
     httpd_handle_t server = NULL;
     httpd_config_t http_cfg = HTTPD_DEFAULT_CONFIG();
     http_cfg.stack_size       = 8192;
-    http_cfg.max_uri_handlers = 12;
+    http_cfg.max_uri_handlers = 11;
 
     if (httpd_start(&server, &http_cfg) != ESP_OK) {
         ESP_LOGE(TAG, "HTTP server start failed");
@@ -721,21 +663,19 @@ static void start_http_server(void)
     httpd_uri_t uri_root        = { "/",            HTTP_GET,  get_root_handler,        NULL };
     httpd_uri_t uri_upload      = { "/upload",      HTTP_POST, post_upload_handler,     NULL };
     httpd_uri_t uri_upload_hd   = { "/upload_hd",   HTTP_POST, post_upload_hd_handler,  NULL };
-    httpd_uri_t uri_sensor_info = { "/sensor_info", HTTP_GET,  get_sensor_info_handler, NULL };
-    httpd_uri_t uri_sensor_cfg  = { "/sensor_cfg",  HTTP_POST, post_sensor_cfg_handler, NULL };
-    httpd_uri_t uri_sensor_test = { "/sensor_test", HTTP_GET,  get_sensor_test_handler, NULL };
     httpd_uri_t uri_mqtt_info   = { "/mqtt_info",   HTTP_GET,  get_mqtt_info_handler,   NULL };
     httpd_uri_t uri_mqtt_cfg    = { "/mqtt_cfg",    HTTP_POST, post_mqtt_cfg_handler,   NULL };
+    httpd_uri_t uri_ha_info     = { "/ha_info",     HTTP_GET,  get_ha_info_handler,     NULL };
+    httpd_uri_t uri_ha_cfg      = { "/ha_cfg",      HTTP_POST, post_ha_cfg_handler,     NULL };
     httpd_register_uri_handler(server, &uri_login_get);
     httpd_register_uri_handler(server, &uri_login_post);
     httpd_register_uri_handler(server, &uri_root);
     httpd_register_uri_handler(server, &uri_upload);
     httpd_register_uri_handler(server, &uri_upload_hd);
-    httpd_register_uri_handler(server, &uri_sensor_info);
-    httpd_register_uri_handler(server, &uri_sensor_cfg);
-    httpd_register_uri_handler(server, &uri_sensor_test);
     httpd_register_uri_handler(server, &uri_mqtt_info);
     httpd_register_uri_handler(server, &uri_mqtt_cfg);
+    httpd_register_uri_handler(server, &uri_ha_info);
+    httpd_register_uri_handler(server, &uri_ha_cfg);
     ESP_LOGI(TAG, "HTTP server ready on port 80");
 }
 
