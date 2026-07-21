@@ -118,17 +118,6 @@ sensor:
       hours: 1
     sampling_size: 20
 
-  # Room booking status (REST API — booking server on RPi)
-  - platform: rest
-    name: "room_mtg1_status"
-    resource: "http://192.168.1.105:5000/api/rooms/M-MTG1"
-    scan_interval: 60
-    value_template: "{{ value_json.status }}"
-    json_attributes:
-      - status
-      - current
-      - next
-
 # ── LIV24 Relay Rule helpers ──────────────────────────────────────
 input_boolean:
   liv24_relay_remote:
@@ -147,7 +136,7 @@ input_boolean:
 input_select:
   liv24_rule1_var:
     name: "Rule 1 — Variable"
-    options: [temperature, humidity, pm2_5, sound]
+    options: [temperature, humidity, pm2_5, pm10, sound]
     initial: temperature
     icon: mdi:thermometer
   liv24_rule1_condition:
@@ -163,7 +152,7 @@ input_select:
 
   liv24_rule2_var:
     name: "Rule 2 — Variable"
-    options: [temperature, humidity, pm2_5, sound]
+    options: [temperature, humidity, pm2_5, pm10, sound]
     initial: humidity
     icon: mdi:water-percent
   liv24_rule2_condition:
@@ -192,38 +181,3 @@ input_number:
     step: 0.5
     initial: 70
     icon: mdi:target
-
-# ── Room Booking helpers ──────────────────────────────────────────
-input_text:
-  booking_title:
-    name: "Meeting Title"
-    max: 100
-  booking_organizer:
-    name: "Your Name"
-    max: 60
-
-input_datetime:
-  booking_start:
-    name: "Booking Start"
-    has_date: true
-    has_time: true
-  booking_end:
-    name: "Booking End"
-    has_date: true
-    has_time: true
-  room_mtg1_booking_start:
-    name: "MTG1 Booking Start"
-    has_date: true
-    has_time: true
-  room_mtg1_booking_end:
-    name: "MTG1 Booking End"
-    has_date: true
-    has_time: true
-  room_mtg1_pre_trigger:
-    name: "MTG1 Pre-booking Trigger"
-    has_date: true
-    has_time: true
-  room_mtg1_post_trigger:
-    name: "MTG1 Post-booking Trigger"
-    has_date: true
-    has_time: true
