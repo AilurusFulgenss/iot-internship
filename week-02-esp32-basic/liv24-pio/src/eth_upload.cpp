@@ -41,6 +41,7 @@ void eth_get_net_gw(char *out, size_t len)
 static lv_obj_t *s_ip_label = NULL;
 static lv_obj_t *s_qr_obj   = NULL;
 static esp_eth_handle_t s_eth_handle = NULL;
+static esp_netif_t     *s_eth_netif  = NULL;
 
 #define ETH_PHY_POWER_GPIO  51
 #define ETH_PHY_ADDR        1
@@ -588,6 +589,15 @@ static void eth_event_handler(void *arg, esp_event_base_t base,
                  IP2STR(&ev->ip_info.ip));
         ESP_LOGI(TAG, "Got IP: %s", ip_str);
 
+        // Override DHCP DNS with Google 8.8.8.8 so external hostnames resolve
+        if (s_eth_netif) {
+            esp_netif_dns_info_t dns = {};
+            dns.ip.type = ESP_IPADDR_TYPE_V4;
+            IP4_ADDR(&dns.ip.u_addr.ip4, 8, 8, 8, 8);
+            esp_netif_set_dns_info(s_eth_netif, ESP_NETIF_DNS_MAIN, &dns);
+            ESP_LOGI(TAG, "DNS overridden to 8.8.8.8");
+        }
+
         if (bsp_display_lock(500)) {
             if (s_qr_obj) {
                 lv_qrcode_update(s_qr_obj, ip_str, strlen(ip_str));
@@ -732,6 +742,7 @@ void eth_start_background(void)
     // esp_netif_init() + esp_event_loop_create_default() called once in app_main.
     esp_netif_config_t netif_cfg = ESP_NETIF_DEFAULT_ETH();
     esp_netif_t *eth_netif = esp_netif_new(&netif_cfg);
+    s_eth_netif = eth_netif;
 
     // Read network mode from NVS (written by DEV → Network tab)
     {

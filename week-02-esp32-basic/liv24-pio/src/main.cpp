@@ -17,7 +17,6 @@
 #include "eth_upload.h"
 #include "wifi_mqtt.h"
 #include "ui_alert.h"
-#include "ui_home.h"
 #include "ui_pin.h"
 #include "sensor_config.h"
 #include "cJSON.h"
@@ -407,7 +406,6 @@ static void sensor_read_task(void *arg)
                 ui_alert_set_mqtt_status(wifi_mqtt_is_connected());
                 ui_user_update(t_cal, h_cal, p25_cal, p10_cal, (int)s_cal);
                 ui_dev_update_sn300(temp, hum, (float)snd, pm25, pm10);
-                ui_home_update_sensors(p25_cal, t_cal, h_cal);
                 ui_alert_check(t_cal, h_cal, p25_cal, p10_cal, s_cal);
                 bsp_display_unlock();
 
@@ -512,19 +510,17 @@ static void touch_nav_init(void)
 
 // ─── btn_mode callbacks ────────────────────────────────
 
-// Short press cycle: USER → Relay → Home
+// Short press cycle: USER → Relay → USER
 void on_short_press(void)
 {
     bsp_display_lock(0);
     lv_obj_t *active = lv_scr_act();
-    if (active == scr_home) {
-        // Home has no nav button — do nothing
-    } else if (active == scr_user) {
+    if (active == scr_user) {
         lv_scr_load_anim(scr[2], LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
         ESP_LOGI(TAG, "-> Relay page");
     } else {
-        lv_scr_load_anim(scr_home, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 300, 0, false);
-        ESP_LOGI(TAG, "-> Home");
+        lv_scr_load_anim(scr_user, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 300, 0, false);
+        ESP_LOGI(TAG, "-> User page");
     }
     bsp_display_unlock();
 }
@@ -686,20 +682,16 @@ extern "C" void app_main(void)
     create_relay_ctrl();
     ui_user_create();
     ui_dev_create();
-    ui_home_create();
     touch_nav_init();
     ui_alert_init();
-    ui_home_set_card1_cb([]() {
-        lv_scr_load_anim(scr_user, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
-    });
     lv_scr_load(scr[0]);     // show logo splash — inside the same lock block
     bsp_display_unlock();
 
-    // Hold logo splash for 2.5s, then fade into USER screen
+    // Hold logo splash for 2.5s, then fade into main USER screen
     vTaskDelay(pdMS_TO_TICKS(2500));
 
     bsp_display_lock(0);
-    lv_scr_load_anim(scr_home, LV_SCR_LOAD_ANIM_FADE_IN, 600, 0, false);
+    lv_scr_load_anim(scr_user, LV_SCR_LOAD_ANIM_FADE_IN, 600, 0, false);
     bsp_display_unlock();
 
     // Register MQTT handler BEFORE starting Ethernet — esp_eth_start() blocks
