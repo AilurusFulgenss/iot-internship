@@ -132,6 +132,7 @@
         - sensor.liv24_temperature
         - sensor.liv24_humidity
         - sensor.liv24_pm2_5
+        - sensor.liv24_pm10
         - sensor.liv24_sound
     - platform: state
       entity_id:
@@ -154,6 +155,7 @@
           {% if v == 'temperature' %}{{ states('sensor.liv24_temperature') | float(0) }}
           {% elif v == 'humidity' %}{{ states('sensor.liv24_humidity') | float(0) }}
           {% elif v == 'pm2_5' %}{{ states('sensor.liv24_pm2_5') | float(0) }}
+          {% elif v == 'pm10' %}{{ states('sensor.liv24_pm10') | float(0) }}
           {% elif v == 'sound' %}{{ states('sensor.liv24_sound') | float(0) }}
           {% else %}0{% endif %}
         threshold: "{{ states('input_number.liv24_rule1_threshold') | float(0) }}"
@@ -187,6 +189,7 @@
         - sensor.liv24_temperature
         - sensor.liv24_humidity
         - sensor.liv24_pm2_5
+        - sensor.liv24_pm10
         - sensor.liv24_sound
     - platform: state
       entity_id:
@@ -209,6 +212,7 @@
           {% if v == 'temperature' %}{{ states('sensor.liv24_temperature') | float(0) }}
           {% elif v == 'humidity' %}{{ states('sensor.liv24_humidity') | float(0) }}
           {% elif v == 'pm2_5' %}{{ states('sensor.liv24_pm2_5') | float(0) }}
+          {% elif v == 'pm10' %}{{ states('sensor.liv24_pm10') | float(0) }}
           {% elif v == 'sound' %}{{ states('sensor.liv24_sound') | float(0) }}
           {% else %}0{% endif %}
         threshold: "{{ states('input_number.liv24_rule2_threshold') | float(0) }}"
@@ -233,85 +237,3 @@
       target:
         entity_id: "{{ relay_entity }}"
   mode: single
-
-# ══════════════════════════════════════════════════════════════════
-# Room Booking — MTG1
-# ══════════════════════════════════════════════════════════════════
-
-- alias: "MTG1 — Update booking trigger datetimes"
-  trigger:
-    - platform: state
-      entity_id: sensor.room_mtg1_status
-  condition:
-    - condition: template
-      value_template: "{{ state_attr('sensor.room_mtg1_status', 'next') is not none }}"
-  action:
-    - variables:
-        next_start: "{{ state_attr('sensor.room_mtg1_status', 'next').start }}"
-        next_end:   "{{ state_attr('sensor.room_mtg1_status', 'next').end }}"
-        today:      "{{ now().strftime('%Y-%m-%d') }}"
-    - service: input_datetime.set_datetime
-      target: { entity_id: input_datetime.room_mtg1_booking_start }
-      data:   { datetime: "{{ today + ' ' + next_start + ':00' }}" }
-    - service: input_datetime.set_datetime
-      target: { entity_id: input_datetime.room_mtg1_booking_end }
-      data:   { datetime: "{{ today + ' ' + next_end + ':00' }}" }
-    - service: input_datetime.set_datetime
-      target: { entity_id: input_datetime.room_mtg1_pre_trigger }
-      data:
-        datetime: >
-          {{ ((today + ' ' + next_start + ':00') | as_datetime
-              - timedelta(minutes=15)).strftime('%Y-%m-%d %H:%M:%S') }}
-    - service: input_datetime.set_datetime
-      target: { entity_id: input_datetime.room_mtg1_post_trigger }
-      data:
-        datetime: >
-          {{ ((today + ' ' + next_end + ':00') | as_datetime
-              + timedelta(minutes=5)).strftime('%Y-%m-%d %H:%M:%S') }}
-
-- alias: "MTG1 — Pre-booking: AC + purifier on"
-  trigger:
-    - platform: time
-      at: input_datetime.room_mtg1_pre_trigger
-  action:
-    - service: climate.turn_on
-      target: { entity_id: climate.room_mtg1_ac }
-    - service: climate.set_temperature
-      target: { entity_id: climate.room_mtg1_ac }
-      data:   { temperature: 25, hvac_mode: cool }
-    - service: fan.turn_on
-      target: { entity_id: fan.room_mtg1_purifier }
-    - service: logbook.log
-      data:
-        name: "Room MTG1 Automation"
-        message: "Pre-booking: AC + purifier on at {{ now().strftime('%H:%M') }}"
-
-- alias: "MTG1 — Booking start: Unlock door"
-  trigger:
-    - platform: time
-      at: input_datetime.room_mtg1_booking_start
-  action:
-    # - service: lock.unlock
-    #   target: { entity_id: lock.room_mtg1_door }   # TODO: IT entity
-    - service: logbook.log
-      data:
-        name: "Room MTG1 Automation"
-        message: "Booking started at {{ now().strftime('%H:%M') }} — door unlock pending IT entity"
-
-- alias: "MTG1 — Post-booking: Turn off all + lock"
-  trigger:
-    - platform: time
-      at: input_datetime.room_mtg1_post_trigger
-  action:
-    - service: climate.turn_off
-      target: { entity_id: climate.room_mtg1_ac }
-    - service: fan.turn_off
-      target: { entity_id: fan.room_mtg1_purifier }
-    # - service: light.turn_off
-    #   target: { entity_id: light.room_mtg1_lights }  # TODO: replace
-    # - service: lock.lock
-    #   target: { entity_id: lock.room_mtg1_door }     # TODO: IT entity
-    - service: logbook.log
-      data:
-        name: "Room MTG1 Automation"
-        message: "Post-booking cleanup at {{ now().strftime('%H:%M') }} — AC + purifier off"
