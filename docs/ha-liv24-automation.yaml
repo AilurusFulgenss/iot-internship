@@ -1,0 +1,117 @@
+# LIV24 Relay Automation Rules
+# Copy-paste เนื้อหาในไฟล์นี้ทั้งหมดลงใน automations.yaml บน RPi
+# (ไฟล์อยู่ที่ /config/automations.yaml หรือเปิดจาก HA → Settings → Automations → ⋮ → Edit as YAML)
+#
+# Sensors available: temperature, humidity, pm2_5, pm10, sound
+
+- alias: "LIV24 Rule 1 — Relay Control"
+  description: >
+    ประเมิน sensor vs threshold แล้ว ON/OFF relay ตาม rule ที่ตั้งไว้บน dashboard
+  trigger:
+    # ทำงานทุกครั้งที่ sensor update
+    - platform: state
+      entity_id:
+        - sensor.liv24_temperature
+        - sensor.liv24_humidity
+        - sensor.liv24_pm2_5
+        - sensor.liv24_pm10
+        - sensor.liv24_sound
+    # ทำงานทันทีเมื่อ user แก้ rule บน dashboard
+    - platform: state
+      entity_id:
+        - input_select.liv24_rule1_var
+        - input_select.liv24_rule1_condition
+        - input_number.liv24_rule1_threshold
+        - input_select.liv24_rule1_output
+        - input_boolean.liv24_rule1_enabled
+  condition:
+    - condition: state
+      entity_id: input_boolean.liv24_rule1_enabled
+      state: "on"
+  action:
+    - variables:
+        sensor_val: >
+          {% set v = states('input_select.liv24_rule1_var') %}
+          {% if v == 'temperature' %}{{ states('sensor.liv24_temperature') | float(0) }}
+          {% elif v == 'humidity' %}{{ states('sensor.liv24_humidity') | float(0) }}
+          {% elif v == 'pm2_5' %}{{ states('sensor.liv24_pm2_5') | float(0) }}
+          {% elif v == 'pm10' %}{{ states('sensor.liv24_pm10') | float(0) }}
+          {% elif v == 'sound' %}{{ states('sensor.liv24_sound') | float(0) }}
+          {% else %}0{% endif %}
+        threshold: "{{ states('input_number.liv24_rule1_threshold') | float(0) }}"
+        cond: "{{ states('input_select.liv24_rule1_condition') }}"
+        rule_met: >
+          {% set sv = sensor_val | float(0) %}
+          {% set th = threshold | float(0) %}
+          {% if cond == '>=' %}{{ sv >= th }}
+          {% elif cond == '<=' %}{{ sv <= th }}
+          {% elif cond == '==' %}{{ (sv - th) | abs < 0.01 }}
+          {% elif cond == '>' %}{{ sv > th }}
+          {% elif cond == '<' %}{{ sv < th }}
+          {% else %}false{% endif %}
+        relay_entity: >
+          {% if states('input_select.liv24_rule1_output') == 'Relay 1' %}
+            switch.liv24_relay_1
+          {% else %}
+            switch.liv24_relay_2
+          {% endif %}
+    - service: >
+        {% if rule_met | bool %}switch.turn_on{% else %}switch.turn_off{% endif %}
+      target:
+        entity_id: "{{ relay_entity }}"
+  mode: single
+
+- alias: "LIV24 Rule 2 — Relay Control"
+  description: >
+    ประเมิน sensor vs threshold แล้ว ON/OFF relay ตาม rule ที่ตั้งไว้บน dashboard
+  trigger:
+    - platform: state
+      entity_id:
+        - sensor.liv24_temperature
+        - sensor.liv24_humidity
+        - sensor.liv24_pm2_5
+        - sensor.liv24_pm10
+        - sensor.liv24_sound
+    - platform: state
+      entity_id:
+        - input_select.liv24_rule2_var
+        - input_select.liv24_rule2_condition
+        - input_number.liv24_rule2_threshold
+        - input_select.liv24_rule2_output
+        - input_boolean.liv24_rule2_enabled
+  condition:
+    - condition: state
+      entity_id: input_boolean.liv24_rule2_enabled
+      state: "on"
+  action:
+    - variables:
+        sensor_val: >
+          {% set v = states('input_select.liv24_rule2_var') %}
+          {% if v == 'temperature' %}{{ states('sensor.liv24_temperature') | float(0) }}
+          {% elif v == 'humidity' %}{{ states('sensor.liv24_humidity') | float(0) }}
+          {% elif v == 'pm2_5' %}{{ states('sensor.liv24_pm2_5') | float(0) }}
+          {% elif v == 'pm10' %}{{ states('sensor.liv24_pm10') | float(0) }}
+          {% elif v == 'sound' %}{{ states('sensor.liv24_sound') | float(0) }}
+          {% else %}0{% endif %}
+        threshold: "{{ states('input_number.liv24_rule2_threshold') | float(0) }}"
+        cond: "{{ states('input_select.liv24_rule2_condition') }}"
+        rule_met: >
+          {% set sv = sensor_val | float(0) %}
+          {% set th = threshold | float(0) %}
+          {% if cond == '>=' %}{{ sv >= th }}
+          {% elif cond == '<=' %}{{ sv <= th }}
+          {% elif cond == '==' %}{{ (sv - th) | abs < 0.01 }}
+          {% elif cond == '>' %}{{ sv > th }}
+          {% elif cond == '<' %}{{ sv < th }}
+          {% else %}false{% endif %}
+        relay_entity: >
+          {% if states('input_select.liv24_rule2_output') == 'Relay 1' %}
+            switch.liv24_relay_1
+          {% else %}
+            switch.liv24_relay_2
+          {% endif %}
+    - service: >
+        {% if rule_met | bool %}switch.turn_on{% else %}switch.turn_off{% endif %}
+      target:
+        entity_id: "{{ relay_entity }}"
+  mode: single
