@@ -1,229 +1,269 @@
 #include "ui_dev.h"
 #include "calib.h"
+#include "esp_log.h"
 #include <stdio.h>
+#include <string.h>
+#include <math.h>
+
+extern void set_app_mode(int mode);
 
 lv_obj_t *scr_dev = NULL;
 
-// One row per sensor field: label, offset display, gain display
+static const char *SN_NAMES[]    = {"TEMPERATURE", "HUMIDITY", "SOUND", "PM 2.5", "PM 10"};
+static const char *SN_UNITS[]    = {"\xc2\xb0""C", "%", "dB", "ug/m3", "ug/m3"};
+static const float SN_OFF_STEP[] = {0.1f, 0.1f, 1.0f, 0.1f, 0.1f};
+
 typedef struct {
-    const char   *name;
-    sensor_calib_t *field;
-    lv_obj_t     *lbl_offset;
-    lv_obj_t     *lbl_gain;
-} calib_row_t;
+    lv_obj_t *lbl_raw;
+    lv_obj_t *lbl_off_val;
+    lv_obj_t *lbl_gain_val;
+    lv_obj_t *lbl_cal;
+} row_t;
 
-static calib_row_t s_rows[5];
+static row_t  g_rows_sn[5];
+static float  g_raw_sn[5] = {0, 0, 0, 0, 0};
+static lv_obj_t *lbl_status = NULL;
 
-static void refresh_labels(void)
+// ── Calib helpers ─────────────────────────────────────────────────────────────
+
+static sensor_calib_t *calib_gs(int idx)
+{
+    switch (idx) {
+        case 0: return &g_calib.temp;
+        case 1: return &g_calib.hum;
+        case 2: return &g_calib.sound;
+        case 3: return &g_calib.pm25;
+        default: return &g_calib.pm10;
+    }
+}
+
+static void refresh_row(int idx)
 {
     char buf[16];
-    for (int i = 0; i < 5; i++) {
-        snprintf(buf, sizeof(buf), "%+.2f", s_rows[i].field->offset);
-        lv_label_set_text(s_rows[i].lbl_offset, buf);
-        snprintf(buf, sizeof(buf), "%.3f", s_rows[i].field->gain);
-        lv_label_set_text(s_rows[i].lbl_gain, buf);
-    }
+    sensor_calib_t *c = calib_gs(idx);
+    row_t *r = &g_rows_sn[idx];
+    snprintf(buf, sizeof(buf), "%+.2f", c->offset);
+    if (r->lbl_off_val) lv_label_set_text(r->lbl_off_val, buf);
+    snprintf(buf, sizeof(buf), "%.2f", c->gain);
+    if (r->lbl_gain_val) lv_label_set_text(r->lbl_gain_val, buf);
+    snprintf(buf, sizeof(buf), "%.1f", calib_apply(g_raw_sn[idx], c));
+    if (r->lbl_cal) lv_label_set_text(r->lbl_cal, buf);
 }
 
-// user_data encoding: row*10 + type (0=offset-, 1=offset+, 2=gain-, 3=gain+)
-static void on_adj(lv_event_t *e)
+// ── Calib button callbacks ────────────────────────────────────────────────────
+// code = (sensor << 2) | (is_gain << 1) | is_plus
+
+static void adj_cb(lv_event_t *e)
 {
-    int code = (int)(intptr_t)lv_event_get_user_data(e);
-    int row  = code / 10;
-    int type = code % 10;
+    int code    = (int)(intptr_t)lv_event_get_user_data(e);
+    int sensor  = (code >> 2) & 0x7;
+    int is_gain = (code >> 1) & 0x1;
+    int is_plus = code & 0x1;
+    float sign  = is_plus ? 1.0f : -1.0f;
 
-    sensor_calib_t *f = s_rows[row].field;
-    switch (type) {
-        case 0: f->offset -= 0.1f; break;
-        case 1: f->offset += 0.1f; break;
-        case 2: f->gain   -= 0.01f; if (f->gain < 0.01f) f->gain = 0.01f; break;
-        case 3: f->gain   += 0.01f; break;
+    sensor_calib_t *c = calib_gs(sensor);
+    if (is_gain)
+        c->gain   = fmaxf(0.1f,    fminf(5.0f,   c->gain   + sign * 0.01f));
+    else
+        c->offset = fmaxf(-200.0f, fminf(200.0f, c->offset + sign * SN_OFF_STEP[sensor]));
+
+    refresh_row(sensor);
+    if (lbl_status) {
+        lv_label_set_text(lbl_status, "unsaved");
+        lv_obj_set_style_text_color(lbl_status, lv_color_hex(0xFF7700), 0);
     }
-    refresh_labels();
 }
 
-static void on_save(lv_event_t *)
+static void save_cb(lv_event_t *e)
 {
     calib_save();
+    if (lbl_status) {
+        lv_label_set_text(lbl_status, "saved");
+        lv_obj_set_style_text_color(lbl_status, lv_color_hex(0x00CC66), 0);
+    }
+}
+
+static void back_cb(lv_event_t *e)
+{
+    set_app_mode(0);
 }
 
 // ── Widget helpers ────────────────────────────────────────────────────────────
 
-static lv_obj_t *make_adj_btn(lv_obj_t *parent, const char *txt, int code,
-                               uint32_t color)
+static lv_obj_t *make_lbl(lv_obj_t *parent, const char *text,
+                           uint32_t color, const lv_font_t *font,
+                           lv_align_t align, int x, int y)
+{
+    lv_obj_t *l = lv_label_create(parent);
+    lv_label_set_text(l, text);
+    lv_obj_set_style_text_color(l, lv_color_hex(color), 0);
+    lv_obj_set_style_text_font(l, font, 0);
+    lv_obj_align(l, align, x, y);
+    return l;
+}
+
+static void make_adj_btn(lv_obj_t *parent, const char *txt,
+                         int code, lv_align_t align, int x, int y)
 {
     lv_obj_t *btn = lv_btn_create(parent);
-    lv_obj_set_size(btn, 52, 44);
-    lv_obj_set_style_bg_color(btn, lv_color_hex(color), 0);
-    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(btn, lv_color_hex(0x334455), 0);
-    lv_obj_set_style_border_width(btn, 1, 0);
+    lv_obj_set_size(btn, 50, 38);
+    lv_obj_align(btn, align, x, y);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0x222238), 0);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0x2A2A50), LV_STATE_PRESSED);
     lv_obj_set_style_radius(btn, 8, 0);
+    lv_obj_set_style_border_color(btn, lv_color_hex(0x3A3A58), 0);
+    lv_obj_set_style_border_width(btn, 1, 0);
     lv_obj_set_style_shadow_width(btn, 0, 0);
+    lv_obj_add_event_cb(btn, adj_cb, LV_EVENT_CLICKED, (void *)(intptr_t)code);
     lv_obj_t *lbl = lv_label_create(btn);
     lv_label_set_text(lbl, txt);
     lv_obj_set_style_text_font(lbl, &lv_font_montserrat_24, 0);
-    lv_obj_set_style_text_color(lbl, lv_color_hex(0xCCCCCC), 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(0xAABBDD), 0);
     lv_obj_center(lbl);
-    lv_obj_add_event_cb(btn, on_adj, LV_EVENT_CLICKED, (void *)(intptr_t)code);
-    return btn;
 }
 
-static lv_obj_t *make_val_lbl(lv_obj_t *parent, const char *init)
+static void make_sensor_card(lv_obj_t *parent, int idx,
+                              const char *name, const char *unit)
 {
-    lv_obj_t *lbl = lv_label_create(parent);
-    lv_label_set_text(lbl, init);
-    lv_obj_set_style_text_color(lbl, lv_color_hex(0x00E5FF), 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_24, 0);
-    lv_obj_set_width(lbl, 90);
-    lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
-    return lbl;
+    lv_obj_t *card = lv_obj_create(parent);
+    lv_obj_set_size(card, 688, 130);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x12121C), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(card, 12, 0);
+    lv_obj_set_style_border_color(card, lv_color_hex(0x2A2A42), 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_pad_all(card, 14, 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+    row_t *r = &g_rows_sn[idx];
+    make_lbl(card, name, 0x5577AA, &lv_font_montserrat_14, LV_ALIGN_TOP_LEFT, 0, 4);
+    r->lbl_raw = make_lbl(card, "--", 0x778899, &lv_font_montserrat_24,
+                          LV_ALIGN_TOP_LEFT, 160, 0);
+    make_lbl(card, ">", 0x334455, &lv_font_montserrat_14, LV_ALIGN_TOP_MID, 0, 6);
+    r->lbl_cal = make_lbl(card, "--", 0x00E5FF, &lv_font_montserrat_24,
+                          LV_ALIGN_TOP_RIGHT, -38, 0);
+    make_lbl(card, unit, 0x445566, &lv_font_montserrat_14, LV_ALIGN_TOP_RIGHT, 0, 6);
+
+    int base = idx << 2;
+    make_lbl(card, "OFF",  0x556677, &lv_font_montserrat_14, LV_ALIGN_BOTTOM_LEFT,   0, -6);
+    make_adj_btn(card, "-", base + 0, LV_ALIGN_BOTTOM_LEFT,  40, 0);
+    r->lbl_off_val = make_lbl(card, "+0.00", 0xFFFFFF, &lv_font_montserrat_24,
+                               LV_ALIGN_BOTTOM_LEFT, 96, -2);
+    make_adj_btn(card, "+", base + 1, LV_ALIGN_BOTTOM_LEFT, 174, 0);
+    make_lbl(card, "GAIN", 0x556677, &lv_font_montserrat_14, LV_ALIGN_BOTTOM_LEFT, 244, -6);
+    make_adj_btn(card, "-", base + 2, LV_ALIGN_BOTTOM_LEFT, 294, 0);
+    r->lbl_gain_val = make_lbl(card, "1.00", 0xFFFFFF, &lv_font_montserrat_24,
+                                LV_ALIGN_BOTTOM_LEFT, 350, -2);
+    make_adj_btn(card, "+", base + 3, LV_ALIGN_BOTTOM_LEFT, 418, 0);
+    refresh_row(idx);
 }
 
-// ── Public ───────────────────────────────────────────────────────────────────
+static void add_save_row(lv_obj_t *parent)
+{
+    lv_obj_t *row = lv_obj_create(parent);
+    lv_obj_set_size(row, 688, 72);
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *btn = lv_btn_create(row);
+    lv_obj_set_size(btn, 320, 52);
+    lv_obj_align(btn, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0x003388), 0);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0x0044AA), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(btn, 10, 0);
+    lv_obj_set_style_shadow_width(btn, 0, 0);
+    lv_obj_add_event_cb(btn, save_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl = lv_label_create(btn);
+    lv_label_set_text(lbl, "SAVE TO NVS");
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(0xCCDDFF), 0);
+    lv_obj_center(lbl);
+}
+
+// ── ui_dev_create ─────────────────────────────────────────────────────────────
 
 void ui_dev_create(void)
 {
     scr_dev = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(scr_dev, lv_color_hex(0x080810), 0);
+    lv_obj_set_style_bg_color(scr_dev, lv_color_hex(0x080812), 0);
     lv_obj_set_style_bg_opa(scr_dev, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_all(scr_dev, 0, 0);
-    lv_obj_clear_flag(scr_dev, LV_OBJ_FLAG_SCROLLABLE);
-
     // ── Header ───────────────────────────────────────────────────────────────
     lv_obj_t *hdr = lv_obj_create(scr_dev);
-    lv_obj_set_size(hdr, 720, 72);
-    lv_obj_align(hdr, LV_ALIGN_TOP_MID, 0, 0);
-    lv_obj_set_style_bg_color(hdr, lv_color_hex(0x0D0D1A), 0);
-    lv_obj_set_style_bg_opa(hdr, LV_OPA_COVER, 0);
+    lv_obj_set_size(hdr, 720, 64);
+    lv_obj_set_pos(hdr, 0, 0);
+    lv_obj_set_style_bg_color(hdr, lv_color_hex(0x0E0E1A), 0);
     lv_obj_set_style_radius(hdr, 0, 0);
     lv_obj_set_style_border_width(hdr, 0, 0);
     lv_obj_set_style_pad_hor(hdr, 22, 0);
     lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(hdr, LV_OBJ_FLAG_FLOATING);
 
-    lv_obj_t *title = lv_label_create(hdr);
-    lv_label_set_text(title, "CALIBRATION");
-    lv_obj_set_style_text_color(title, lv_color_hex(0x00E5FF), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_32, 0);
-    lv_obj_align(title, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_t *bar = lv_obj_create(hdr);
+    lv_obj_set_size(bar, 720, 3);
+    lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, 40);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(0x0088FF), 0);
+    lv_obj_set_style_border_width(bar, 0, 0);
+    lv_obj_set_style_pad_all(bar, 0, 0);
 
-    // Back button
-    lv_obj_t *back = lv_btn_create(hdr);
-    lv_obj_set_size(back, 100, 44);
-    lv_obj_align(back, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_set_style_bg_color(back, lv_color_hex(0x1A1A2E), 0);
-    lv_obj_set_style_border_color(back, lv_color_hex(0x2C3D52), 0);
-    lv_obj_set_style_border_width(back, 1, 0);
-    lv_obj_set_style_radius(back, 8, 0);
-    lv_obj_set_style_shadow_width(back, 0, 0);
-    lv_obj_add_event_cb(back, [](lv_event_t *) {
-        extern void set_app_mode(int);
-        set_app_mode(0);   // MODE_USER = 0
-    }, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *back_lbl = lv_label_create(back);
-    lv_label_set_text(back_lbl, LV_SYMBOL_LEFT " HOME");
-    lv_obj_set_style_text_color(back_lbl, lv_color_hex(0x556677), 0);
-    lv_obj_set_style_text_font(back_lbl, &lv_font_montserrat_14, 0);
-    lv_obj_center(back_lbl);
+    // Back button (left side)
+    lv_obj_t *btn_back = lv_btn_create(hdr);
+    lv_obj_set_size(btn_back, 80, 38);
+    lv_obj_align(btn_back, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_bg_color(btn_back, lv_color_hex(0x1A1A2E), 0);
+    lv_obj_set_style_bg_color(btn_back, lv_color_hex(0x2A2A40), LV_STATE_PRESSED);
+    lv_obj_set_style_border_color(btn_back, lv_color_hex(0x334455), 0);
+    lv_obj_set_style_border_width(btn_back, 1, 0);
+    lv_obj_set_style_radius(btn_back, 8, 0);
+    lv_obj_set_style_shadow_width(btn_back, 0, 0);
+    lv_obj_add_event_cb(btn_back, back_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_back = lv_label_create(btn_back);
+    lv_label_set_text(lbl_back, "< Back");
+    lv_obj_set_style_text_color(lbl_back, lv_color_hex(0x5577AA), 0);
+    lv_obj_set_style_text_font(lbl_back, &lv_font_montserrat_14, 0);
+    lv_obj_center(lbl_back);
 
-    // Cyan accent
-    lv_obj_t *accent = lv_obj_create(scr_dev);
-    lv_obj_set_size(accent, 720, 3);
-    lv_obj_set_pos(accent, 0, 72);
-    lv_obj_set_style_bg_color(accent, lv_color_hex(0x00E5FF), 0);
-    lv_obj_set_style_border_width(accent, 0, 0);
-    lv_obj_set_style_pad_all(accent, 0, 0);
+    make_lbl(hdr, "DEV MODE", 0x5577AA, &lv_font_montserrat_32, LV_ALIGN_CENTER, 0, 0);
+    lbl_status = make_lbl(hdr, "", 0x445566, &lv_font_montserrat_14, LV_ALIGN_RIGHT_MID, 0, 0);
 
-    // ── Column headers ────────────────────────────────────────────────────────
-    // [Sensor 180] [OFFSET: - val +] [GAIN: - val +]
-    const int ROW_Y0 = 92;
-    const int ROW_H  = 64;
-    const int X_OFF  = 210;   // offset group x
-    const int X_GAIN = 460;   // gain group x
+    // ── SN-300 Calib content ─────────────────────────────────────────────────
+    lv_obj_t *cont = lv_obj_create(scr_dev);
+    lv_obj_set_pos(cont, 0, 64);
+    lv_obj_set_size(cont, 720, 1280 - 64);
+    lv_obj_set_style_bg_opa(cont, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(cont, 0, 0);
+    lv_obj_set_style_pad_left(cont,   16, 0);
+    lv_obj_set_style_pad_right(cont,  16, 0);
+    lv_obj_set_style_pad_top(cont,    16, 0);
+    lv_obj_set_style_pad_bottom(cont, 20, 0);
+    lv_obj_set_style_pad_row(cont,    10, 0);
+    lv_obj_set_scroll_dir(cont, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(cont, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_layout(cont, LV_LAYOUT_FLEX);
+    lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
 
-    lv_obj_t *h_sensor = lv_label_create(scr_dev);
-    lv_label_set_text(h_sensor, "SENSOR");
-    lv_obj_set_style_text_color(h_sensor, lv_color_hex(0x445566), 0);
-    lv_obj_set_style_text_font(h_sensor, &lv_font_montserrat_14, 0);
-    lv_obj_set_pos(h_sensor, 28, ROW_Y0 - 20);
+    for (int i = 0; i < 5; i++)
+        make_sensor_card(cont, i, SN_NAMES[i], SN_UNITS[i]);
 
-    lv_obj_t *h_off = lv_label_create(scr_dev);
-    lv_label_set_text(h_off, "OFFSET  (±0.1)");
-    lv_obj_set_style_text_color(h_off, lv_color_hex(0x445566), 0);
-    lv_obj_set_style_text_font(h_off, &lv_font_montserrat_14, 0);
-    lv_obj_set_pos(h_off, X_OFF, ROW_Y0 - 20);
+    add_save_row(cont);
 
-    lv_obj_t *h_gain = lv_label_create(scr_dev);
-    lv_label_set_text(h_gain, "GAIN  (±0.01)");
-    lv_obj_set_style_text_color(h_gain, lv_color_hex(0x445566), 0);
-    lv_obj_set_style_text_font(h_gain, &lv_font_montserrat_14, 0);
-    lv_obj_set_pos(h_gain, X_GAIN, ROW_Y0 - 20);
+    lv_obj_move_foreground(hdr);
+}
 
-    // ── Sensor rows ───────────────────────────────────────────────────────────
-    const char *names[5] = {"TEMP", "HUMIDITY", "SOUND", "PM2.5", "PM10"};
-    sensor_calib_t *fields[5] = {
-        &g_calib.temp, &g_calib.hum, &g_calib.sound, &g_calib.pm25, &g_calib.pm10
-    };
+// ── ui_dev_update_sn300 (call from inside bsp_display_lock) ─────────────────
 
+void ui_dev_update_sn300(float t_raw, float h_raw, float s_raw,
+                         float p25_raw, float p10_raw)
+{
+    if (!scr_dev) return;
+    float raws[5] = {t_raw, h_raw, s_raw, p25_raw, p10_raw};
     char buf[16];
     for (int i = 0; i < 5; i++) {
-        s_rows[i].name  = names[i];
-        s_rows[i].field = fields[i];
-
-        int y = ROW_Y0 + i * ROW_H;
-
-        // Sensor name
-        lv_obj_t *nm = lv_label_create(scr_dev);
-        lv_label_set_text(nm, names[i]);
-        lv_obj_set_style_text_color(nm, lv_color_hex(0xCCCCCC), 0);
-        lv_obj_set_style_text_font(nm, &lv_font_montserrat_24, 0);
-        lv_obj_set_pos(nm, 28, y + 10);
-
-        // Offset: [-] [val] [+]
-        lv_obj_t *bom = make_adj_btn(scr_dev, "-", i * 10 + 0, 0x1A1A2E);
-        lv_obj_set_pos(bom, X_OFF, y + 6);
-
-        snprintf(buf, sizeof(buf), "%+.2f", fields[i]->offset);
-        s_rows[i].lbl_offset = make_val_lbl(scr_dev, buf);
-        lv_obj_set_pos(s_rows[i].lbl_offset, X_OFF + 56, y + 10);
-
-        lv_obj_t *bop = make_adj_btn(scr_dev, "+", i * 10 + 1, 0x0D2010);
-        lv_obj_set_pos(bop, X_OFF + 152, y + 6);
-
-        // Gain: [-] [val] [+]
-        lv_obj_t *bgm = make_adj_btn(scr_dev, "-", i * 10 + 2, 0x1A1A2E);
-        lv_obj_set_pos(bgm, X_GAIN, y + 6);
-
-        snprintf(buf, sizeof(buf), "%.3f", fields[i]->gain);
-        s_rows[i].lbl_gain = make_val_lbl(scr_dev, buf);
-        lv_obj_set_pos(s_rows[i].lbl_gain, X_GAIN + 56, y + 10);
-
-        lv_obj_t *bgp = make_adj_btn(scr_dev, "+", i * 10 + 3, 0x0D2010);
-        lv_obj_set_pos(bgp, X_GAIN + 152, y + 6);
-
-        // Divider line
-        lv_obj_t *div = lv_obj_create(scr_dev);
-        lv_obj_set_size(div, 680, 1);
-        lv_obj_set_pos(div, 20, y + ROW_H - 2);
-        lv_obj_set_style_bg_color(div, lv_color_hex(0x1E1E30), 0);
-        lv_obj_set_style_border_width(div, 0, 0);
-        lv_obj_set_style_pad_all(div, 0, 0);
+        g_raw_sn[i] = raws[i];
+        snprintf(buf, sizeof(buf), "%.1f", raws[i]);
+        if (g_rows_sn[i].lbl_raw) lv_label_set_text(g_rows_sn[i].lbl_raw, buf);
+        snprintf(buf, sizeof(buf), "%.1f", calib_apply(raws[i], calib_gs(i)));
+        if (g_rows_sn[i].lbl_cal) lv_label_set_text(g_rows_sn[i].lbl_cal, buf);
     }
-
-    // ── Save button ───────────────────────────────────────────────────────────
-    lv_obj_t *save = lv_btn_create(scr_dev);
-    lv_obj_set_size(save, 220, 56);
-    lv_obj_align(save, LV_ALIGN_BOTTOM_MID, 0, -24);
-    lv_obj_set_style_bg_color(save, lv_color_hex(0x004455), 0);
-    lv_obj_set_style_bg_opa(save, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(save, lv_color_hex(0x00E5FF), 0);
-    lv_obj_set_style_border_width(save, 1, 0);
-    lv_obj_set_style_radius(save, 10, 0);
-    lv_obj_set_style_shadow_width(save, 0, 0);
-    lv_obj_add_event_cb(save, on_save, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *save_lbl = lv_label_create(save);
-    lv_label_set_text(save_lbl, LV_SYMBOL_SAVE "  SAVE");
-    lv_obj_set_style_text_color(save_lbl, lv_color_hex(0x00E5FF), 0);
-    lv_obj_set_style_text_font(save_lbl, &lv_font_montserrat_24, 0);
-    lv_obj_center(save_lbl);
 }

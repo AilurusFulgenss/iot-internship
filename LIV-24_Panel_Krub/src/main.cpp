@@ -119,6 +119,7 @@ static void sensor_task(void *)
 
             if (bsp_display_lock(0)) {
                 ui_user_update(t_cal, h_cal, p25, p10, (int)s_cal);
+                ui_dev_update_sn300(temp, hum, (float)sound, pm25, pm10);
                 bsp_display_unlock();
             }
         } else {
